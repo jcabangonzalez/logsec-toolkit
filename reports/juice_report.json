@@ -1,0 +1,11 @@
+{
+  "error": null,
+  "filepath": "samples/juice_shop_docker.log",
+  "blocked_total": 0,
+  "solved_total": 2,
+  "blocked_by_ip": {},
+  "solved_challenges": {
+    "errorHandlingChallenge (Error Handling)": 1,
+    "loginAdminChallenge (Login Admin)": 1
+  }
+}

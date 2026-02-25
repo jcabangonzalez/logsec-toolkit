@@ -1,0 +1,3 @@
+Alt + \
+k
+PYTHONPATH=src python3 -m logsec.cli apache samples/access.log --top 5

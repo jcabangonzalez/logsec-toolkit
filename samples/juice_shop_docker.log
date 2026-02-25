@@ -1,0 +1,20 @@
+info: Detected Node.js version v22.21.1 (OK)
+info: Detected OS linux (OK)
+info: Detected CPU x64 (OK)
+info: Configuration default validated (OK)
+info: Entity models 20 of 20 are initialized (OK)
+info: Required file server.js is present (OK)
+info: Required file index.html is present (OK)
+info: Required file styles.css is present (OK)
+info: Required file main.js is present (OK)
+info: Required file runtime.js is present (OK)
+info: Required file vendor.js is present (OK)
+info: Required file tutorial.js is present (OK)
+info: Port 3000 is available (OK)
+info: Chatbot training data botDefaultTrainingData.json validated (OK)
+info: Domain https://www.alchemy.com/ is reachable (OK)
+info: Server listening on port 3000
+info: Solved 1-star errorHandlingChallenge (Error Handling)
+info: Cheat score for trivial errorHandlingChallenge solved in 2min (expected ~0min) with hints allowed: 0
+info: Solved 2-star loginAdminChallenge (Login Admin)
+info: Cheat score for tutorial loginAdminChallenge solved in 21min (expected ~2min) with hints allowed: 0
