@@ -6,6 +6,14 @@
 ![CLI](https://img.shields.io/badge/interface-CLI-black)
 
 Lightweight defensive log analysis toolkit for Apache access logs and OWASP Juice Shop docker logs.
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/jcabangonzalez/logsec-toolkit.git
+cd logsec-toolkit
+```
 ## Usage
 
 ### Apache logs
