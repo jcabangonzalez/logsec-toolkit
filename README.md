@@ -6,6 +6,14 @@
 ![CLI](https://img.shields.io/badge/interface-CLI-black)
 
 Lightweight defensive log analysis toolkit for Apache access logs and OWASP Juice Shop docker logs.
+## Features
+
+- Apache/Nginx access log analysis
+- Brute-force login detection heuristics
+- OWASP Juice Shop docker log parsing
+- Suspicious admin login indicator detection (lab context)
+- JSON-ready structured output
+- Command-line interface (CLI)
 ## Installation
 
 Clone the repository:
