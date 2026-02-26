@@ -35,3 +35,27 @@ PYTHONPATH=src python3 -m logsec.cli apache samples/access.log --top 5
 ```bash
 PYTHONPATH=src python3 -m logsec.cli juice samples/juice_shop_docker.log --top 10
 ```
+
+### Example JSON Output
+
+```json
+{
+  "summary": {
+    "total_requests": 10,
+    "errors_4xx": 0,
+    "errors_5xx": 0
+  },
+  "top_ips": [
+    {"ip": "127.0.0.1", "count": 5},
+    {"ip": "192.168.1.10", "count": 5}
+  ],
+  "alerts": [
+    {
+      "type": "brute_force",
+      "endpoint": "/login",
+      "ip": "192.168.1.10",
+      "attempts": 5
+    }
+  ]
+}
+```
