@@ -6,3 +6,16 @@
 ![CLI](https://img.shields.io/badge/interface-CLI-black)
 
 Lightweight defensive log analysis toolkit for Apache access logs and OWASP Juice Shop docker logs.
+## Usage
+
+### Apache logs
+
+```bash
+PYTHONPATH=src python3 -m logsec.cli apache samples/access.log --top 5
+```
+
+### OWASP Juice Shop logs
+
+```bash
+PYTHONPATH=src python3 -m logsec.cli juice samples/juice_shop_docker.log --top 10
+```
