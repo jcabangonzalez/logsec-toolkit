@@ -24,6 +24,24 @@ cd logsec-toolkit
 ```
 ## Usage
 
+### Apache Log Security Analyzer
+
+Analyze Apache access logs and detect suspicious activity.
+
+#### Run the analyzer
+
+```bash
+python3 analyzer.py access.log
+```
+
+#### What it detects
+
+* Top IP addresses by request volume
+* HTTP error statistics
+* Possible brute-force login attempts
+* Suspicious high-frequency IP activity
+
+
 ### Apache logs
 
 ```bash
