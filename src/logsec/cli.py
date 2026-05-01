@@ -52,7 +52,13 @@ def main():
                 response = client.messages.create(
                     model="claude-haiku-4-5-20251001",
                     max_tokens=1000,
-                    messages=[{"role": "user", "content": f"Analyze these IPs and tell me who to block: {report_text}"}]
+                    messages=[{"role": "user", "content": f"""Act as a Senior Security Engineer.
+Analyze these IPs step by step.
+For each IP identify: threat level, reason, recommended action.
+Return output in JSON format.
+
+Data:
+{report_text}"""
                 )
                 print(">> Success with Anthropic!\n")
                 print("=== AI SECURITY REPORT ===")
