@@ -26,7 +26,7 @@ def parse_line(line: str):
     data["size"] = 0 if data["size"] == "-" else int(data["size"])
     return data
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0) -> dict:
     score = 0
     reasons = []
 
@@ -54,6 +54,12 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     if flood_count > 0:
         score += 2
         reasons.append("Flood detectado")
+    if night_count >= 5:
+        score += 3
+        reasons.append(f"Actividad nocturna sospechosa: {night_count} requests entre 0-5am")
+    elif night_count >= 2:
+        score += 1
+        reasons.append(f"Actividad nocturna: {night_count} requests entre 0-5am")
 
     if score >= 7:
         level = "CRITICAL"
@@ -130,7 +136,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
 
     risk_report = []
     for ip in ips:
-        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0))
+        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0))
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
 
