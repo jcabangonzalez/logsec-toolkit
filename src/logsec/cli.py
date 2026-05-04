@@ -55,10 +55,10 @@ def main():
                     messages=[{"role": "user", "content": f"""Act as a Senior Security Engineer.
 Analyze these IPs step by step.
 For each IP identify: threat level, reason, recommended action.
-Return output in JSON format.
+
 
 Data:
-{report_text}"""
+{report_text}"""}]
                 )
                 print(">> Success with Anthropic!\n")
                 print("=== AI SECURITY REPORT ===")
