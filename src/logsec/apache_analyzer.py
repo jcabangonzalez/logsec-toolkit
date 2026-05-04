@@ -4,6 +4,7 @@ import json
 import time
 import requests
 from collections import Counter
+from datetime import datetime
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from google import genai
@@ -70,6 +71,8 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     login_attempts = Counter()
     scanners = Counter()
     flood_ips = Counter()
+    night_requests = Counter()
+    night_requests = Counter()
     errors_4xx = 0
     errors_5xx = 0
     redirects = 0
@@ -88,6 +91,12 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                 parsed_lines += 1
                 total_requests += 1
                 ips[parsed["ip"]] += 1
+                try:
+                    dt = datetime.strptime(parsed["datetime"], "%d/%b/%Y:%H:%M:%S %z")
+                    if dt.hour < 5:
+                        night_requests[parsed["ip"]] += 1
+                except:
+                    pass
                 if ips[parsed["ip"]] > flood_threshold:
                     flood_ips[parsed["ip"]] = ips[parsed["ip"]]
                 if any(path in parsed["url"] for path in scanner_paths):
@@ -138,6 +147,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         "login_attempts": dict(login_attempts),
         "scanners": dict(scanners),
         "flood_ips": dict(flood_ips),
+        "night_requests": dict(night_requests),
         "risk_report": risk_report,
     }
 
