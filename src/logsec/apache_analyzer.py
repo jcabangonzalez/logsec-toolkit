@@ -40,7 +40,7 @@ def parse_line(line: str):
     data["size"] = 0 if data["size"] == "-" else int(data["size"])
     return data
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0) -> dict:
     score = 0
     reasons = []
 
@@ -68,6 +68,13 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     if login_attempts >= 3 and scanner_hits >= 1:
         score += 3
         reasons.append(f"Combined brute force + scanning — likely automated attack")
+
+    if errors_4xx >= 50:
+        score += 2
+        reasons.append(f"Alto número de errores 4xx: {errors_4xx}")
+    elif errors_4xx >= 20:
+        score += 1
+        reasons.append(f"Errores 4xx elevados: {errors_4xx}")
 
     if flood_count > 0:
         score += 2
@@ -98,6 +105,8 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     night_requests = Counter()
     errors_4xx = 0
     errors_5xx = 0
+    errors_4xx_per_ip = Counter()
+    errors_5xx_per_ip = Counter()
     redirects = 0
     total_requests = 0
     parsed_lines = 0
@@ -135,9 +144,10 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                     redirects += 1
                 elif 400 <= parsed["status"] < 500:
                     errors_4xx += 1
+                    errors_4xx_per_ip[parsed["ip"]] += 1
                 elif 500 <= parsed["status"] < 600:
                     errors_5xx += 1
-
+                    errors_5xx_per_ip[parsed["ip"]] += 1
     except FileNotFoundError:
         return {"error": "not_found", "filepath": filepath}
     except PermissionError:
@@ -147,7 +157,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
 
     risk_report = []
     for ip in ips:
-        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0))
+        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0))
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
 
@@ -165,6 +175,8 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         "scanners": dict(scanners),
         "flood_ips": dict(flood_ips),
         "night_requests": dict(night_requests),
+        "errors_4xx_per_ip": dict(errors_4xx_per_ip),
+        "errors_5xx_per_ip": dict(errors_5xx_per_ip),
         "risk_report": risk_report,
     }
 
