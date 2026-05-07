@@ -17,6 +17,20 @@ log_pattern = re.compile(
     r'(?P<status>\d+) (?P<size>\d+|-)'
 )
 
+FLOOD_THRESHOLD = 10
+
+SCANNER_PATHS = {
+    "/.env": 3,
+    "/backup.zip": 3,
+    "/.git": 2,
+    "/xmlrpc.php": 2,
+    "/wp-admin": 2,
+    "/phpmyadmin": 2,
+    "/config.php": 1,
+    "/actuator": 1,
+    "/console": 1,
+}
+
 def parse_line(line: str):
     match = log_pattern.match(line)
     if not match:
@@ -85,11 +99,8 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     errors_4xx = 0
     errors_5xx = 0
     redirects = 0
-    flood_threshold = 10
     total_requests = 0
     parsed_lines = 0
-
-    scanner_paths = ["/.env", "/.git", "/phpmyadmin", "/wp-admin"]
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as file:
@@ -106,21 +117,18 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                         night_requests[parsed["ip"]] += 1
                 except:
                     pass
-                if ips[parsed["ip"]] > flood_threshold:
+                if ips[parsed["ip"]] > FLOOD_THRESHOLD:
                     flood_ips[parsed["ip"]] = ips[parsed["ip"]]
-                if any(path in parsed["url"] for path in scanner_paths):
-                    if parsed["status"] == 200:
-                        scanners[parsed["ip"]] += 3
-                    elif parsed["status"] == 401:
-                        scanners[parsed["ip"]] += 2
-                    elif parsed["status"] == 403:
-                        scanners[parsed["ip"]] += 1
-                    elif parsed["status"] == 404:
-                        scanners[parsed["ip"]] += 0.5
-                    elif parsed["status"] == 500:
-                        scanners[parsed["ip"]] += 0.5
-                    elif parsed["status"] == 502:
-                        scanners[parsed["ip"]] += 0.5
+                for path, path_weight in SCANNER_PATHS.items():
+                    if path in parsed["url"]:
+                        if parsed["status"] == 200:
+                            scanners[parsed["ip"]] += 3 * path_weight
+                        elif parsed["status"] == 401:
+                            scanners[parsed["ip"]] += 2 * path_weight
+                        elif parsed["status"] == 403:
+                            scanners[parsed["ip"]] += 1 * path_weight
+                        elif parsed["status"] in (404, 500, 502):
+                            scanners[parsed["ip"]] += 0.5 * path_weight
                 if parsed["method"] == "POST" and parsed["url"] == login_url:
                     login_attempts[parsed["ip"]] += 1
                 if 300 <= parsed["status"] < 400:
