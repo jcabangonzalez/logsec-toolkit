@@ -78,7 +78,6 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     scanners = Counter()
     flood_ips = Counter()
     night_requests = Counter()
-    night_requests = Counter()
     errors_4xx = 0
     errors_5xx = 0
     redirects = 0
