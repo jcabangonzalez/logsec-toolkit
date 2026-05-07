@@ -51,6 +51,10 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
         score += 1
         reasons.append(f"Acceso a path sospechoso: {scanner_hits}")
 
+    if login_attempts >= 3 and scanner_hits >= 1:
+        score += 3
+        reasons.append(f"Combined brute force + scanning — likely automated attack")
+
     if flood_count > 0:
         score += 2
         reasons.append("Flood detectado")
