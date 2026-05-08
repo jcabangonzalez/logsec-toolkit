@@ -15,9 +15,19 @@ log_pattern = re.compile(
     r'(?P<ip>\S+) \S+ \S+ \[(?P<datetime>[^\]]+)\] '
     r'"(?P<method>\S+) (?P<url>\S+) (?P<protocol>[^"]+)" '
     r'(?P<status>\d+) (?P<size>\d+|-)'
+    r'(?: "(?P<referer>[^"]*)" "(?P<user_agent>[^"]*)")?'
 )
 
 FLOOD_THRESHOLD = 10
+
+SUSPICIOUS_AGENTS = {
+    "sqlmap": 4,
+    "nikto": 3,
+    "masscan": 3,
+    "nmap": 2,
+    "curl": 1,
+    "wget": 1,
+}
 
 SCANNER_PATHS = {
     "/.env": 3,
@@ -40,7 +50,7 @@ def parse_line(line: str):
     data["size"] = 0 if data["size"] == "-" else int(data["size"])
     return data
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0) -> dict:
     score = 0
     reasons = []
 
@@ -76,6 +86,19 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
         score += 1
         reasons.append(f"Errores 4xx elevados: {errors_4xx}")
 
+    if agent_score >= 8:
+        score += 6
+        reasons.append(f"Suspicious User-Agent (score: {agent_score})")
+    elif agent_score >= 4:
+        score += 4
+        reasons.append(f"Suspicious User-Agent (score: {agent_score})")
+    elif agent_score >= 2:
+        score += 2
+        reasons.append(f"Suspicious User-Agent (score: {agent_score})")
+    elif agent_score >= 1:
+        score += 1
+        reasons.append(f"Suspicious User-Agent (score: {agent_score})")
+
     if flood_count > 0:
         score += 2
         reasons.append("Flood detectado")
@@ -103,6 +126,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     scanners = Counter()
     flood_ips = Counter()
     night_requests = Counter()
+    suspicious_agents = Counter()
     errors_4xx = 0
     errors_5xx = 0
     errors_4xx_per_ip = Counter()
@@ -138,6 +162,10 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                             scanners[parsed["ip"]] += 1 * path_weight
                         elif parsed["status"] in (404, 500, 502):
                             scanners[parsed["ip"]] += 0.5 * path_weight
+                user_agent = (parsed.get("user_agent") or "").lower()
+                for agent, agent_weight in SUSPICIOUS_AGENTS.items():
+                    if agent in user_agent:
+                        suspicious_agents[parsed["ip"]] += agent_weight
                 if parsed["method"] == "POST" and parsed["url"] == login_url:
                     login_attempts[parsed["ip"]] += 1
                 if 300 <= parsed["status"] < 400:
@@ -157,7 +185,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
 
     risk_report = []
     for ip in ips:
-        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0))
+        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0), suspicious_agents.get(ip, 0))
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
 
@@ -173,6 +201,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         "ips": ips,
         "login_attempts": dict(login_attempts),
         "scanners": dict(scanners),
+        "suspicious_agents": dict(suspicious_agents),
         "flood_ips": dict(flood_ips),
         "night_requests": dict(night_requests),
         "errors_4xx_per_ip": dict(errors_4xx_per_ip),
