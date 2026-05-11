@@ -19,6 +19,7 @@ log_pattern = re.compile(
 )
 
 FLOOD_THRESHOLD = 10
+_MAX_RAW_SCORE = 27
 
 SUSPICIOUS_AGENTS = {
     "sqlmap": 4,
@@ -50,16 +51,19 @@ def parse_line(line: str):
     data["size"] = 0 if data["size"] == "-" else int(data["size"])
     return data
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0) -> dict:
     score = 0
     reasons = []
 
-    if ip_count >= 500:
+    if rate >= 100:
+        score += 4
+        reasons.append(f"Flood rate: {rate:.1f} req/min")
+    elif rate >= 20:
         score += 2
-        reasons.append(f"Alto volumen: {ip_count} requests")
-    elif ip_count >= 100:
+        reasons.append(f"Alta tasa de requests: {rate:.1f} req/min")
+    elif rate >= 5:
         score += 1
-        reasons.append(f"Volumen elevado: {ip_count} requests")
+        reasons.append(f"Tasa elevada: {rate:.1f} req/min")
 
     if login_attempts >= 10:
         score += 4
@@ -102,23 +106,30 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     if flood_count > 0:
         score += 2
         reasons.append("Flood detectado")
-    if night_count >= 5:
-        score += 3
-        reasons.append(f"Actividad nocturna sospechosa: {night_count} requests entre 0-5am")
-    elif night_count >= 2:
-        score += 1
-        reasons.append(f"Actividad nocturna: {night_count} requests entre 0-5am")
 
-    if score >= 7:
+    night_ratio = night_count / ip_count if ip_count > 0 else 0.0
+    if night_count >= 2 and night_ratio >= 0.5:
+        score += 3
+        reasons.append(f"Alta actividad nocturna: {night_ratio:.0%} de requests entre 0-5am")
+    elif night_count >= 2 and night_ratio >= 0.2:
+        score += 2
+        reasons.append(f"Actividad nocturna significativa: {night_ratio:.0%} de requests entre 0-5am")
+    elif night_count >= 1 and night_ratio >= 0.05:
+        score += 1
+        reasons.append(f"Actividad nocturna: {night_ratio:.0%} de requests entre 0-5am")
+
+    normalized = min(100, round(score * 100 / _MAX_RAW_SCORE))
+
+    if normalized >= 70:
         level = "CRITICAL"
-    elif score >= 4:
+    elif normalized >= 40:
         level = "HIGH"
-    elif score >= 2:
+    elif normalized >= 15:
         level = "MEDIUM"
     else:
         level = "LOW"
 
-    return {"ip": ip, "risk_level": level, "score": score, "reasons": reasons}
+    return {"ip": ip, "risk_level": level, "score": normalized, "reasons": reasons}
 
 def analyze_file(filepath: str, login_url: str = "/login"):
     ips = Counter()
@@ -127,6 +138,8 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     flood_ips = Counter()
     night_requests = Counter()
     suspicious_agents = Counter()
+    first_seen = {}
+    last_seen = {}
     errors_4xx = 0
     errors_5xx = 0
     errors_4xx_per_ip = Counter()
@@ -146,8 +159,13 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                 ips[parsed["ip"]] += 1
                 try:
                     dt = datetime.strptime(parsed["datetime"], "%d/%b/%Y:%H:%M:%S %z")
+                    ip = parsed["ip"]
+                    if ip not in first_seen or dt < first_seen[ip]:
+                        first_seen[ip] = dt
+                    if ip not in last_seen or dt > last_seen[ip]:
+                        last_seen[ip] = dt
                     if dt.hour < 5:
-                        night_requests[parsed["ip"]] += 1
+                        night_requests[ip] += 1
                 except:
                     pass
                 if ips[parsed["ip"]] > FLOOD_THRESHOLD:
@@ -183,9 +201,17 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     except Exception as e:
         return {"error": f"unexpected: {e}", "filepath": filepath}
 
+    rates = {}
+    for ip in ips:
+        if ip in first_seen and ip in last_seen:
+            duration_secs = (last_seen[ip] - first_seen[ip]).total_seconds()
+            rates[ip] = ips[ip] / (duration_secs / 60) if duration_secs > 0 else float(ips[ip])
+        else:
+            rates[ip] = 0.0
+
     risk_report = []
     for ip in ips:
-        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0), suspicious_agents.get(ip, 0))
+        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0), suspicious_agents.get(ip, 0), rates.get(ip, 0.0))
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
 
