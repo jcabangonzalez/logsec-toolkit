@@ -56,6 +56,10 @@ def parse_line(line: str):
 def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0) -> dict:
     score = 0
     reasons = []
+    
+    if ip in blocklist:
+        score += 10
+        reasons.append(f"IP found in threat intelligence blocklist: {ip}")
 
     if rate >= 100:
         score += 4
@@ -280,6 +284,14 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         "errors_5xx_per_ip": dict(errors_5xx_per_ip),
         "risk_report": risk_report,
     }
+
+def load_blocklist(filepath):
+    ips = set()
+    with open(filepath, "r") as f:
+        for line in f:
+            ips.add(line.strip())
+    return ips
+blocklist = load_blocklist("../samples/blocklist.txt")
 
 def print_report(results, top: int = 10, bf_threshold: int = 3):
     if results.get("error"):
