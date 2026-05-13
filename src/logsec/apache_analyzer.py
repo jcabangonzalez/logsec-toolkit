@@ -8,6 +8,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from google import genai
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 
 load_dotenv()
 
@@ -324,4 +326,41 @@ def print_report(results, top: int = 10, bf_threshold: int = 3):
                 print(f"{color}[{entry['risk_level']}] {entry['ip']} (score: {entry['score']}){reset}")
                 for reason in entry["reasons"]:
                     print(f"  → {reason}")
+
+def export_pdf_report(results, output_path="report.pdf"):
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+
+    c = canvas.Canvas(output_path, pagesize=letter)
+    width, height = letter
+    y = height - 50
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, y, "LogSec Toolkit - Security Report")
+    y -= 30
+
+    c.setFont("Helvetica", 10)
+    c.drawString(50, y, f"File: {results['filepath']}")
+    y -= 15
+    c.drawString(50, y, f"Total requests: {results['total_requests']}")
+    y -= 30
+
+    risk_report = results.get("risk_report", [])
+    for entry in risk_report:
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(50, y, f"[{entry['risk_level']}] {entry['ip']} (score: {entry['score']})")
+        y -= 15
+        c.setFont("Helvetica", 10)
+        for reason in entry["reasons"]:
+            c.drawString(70, y, f"- {reason}")
+            y -= 12
+        y -= 10
+        if y < 100:
+            c.showPage()
+            y = height - 50
+
+    c.save()
+    print(f"\nPDF report saved to: {output_path}")
+
+
 

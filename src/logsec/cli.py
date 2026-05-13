@@ -2,6 +2,7 @@ import argparse
 
 from logsec.apache_analyzer import analyze_file as analyze_apache_file, print_report as print_apache_report
 from logsec.juice_analyzer import analyze_juice_logs, print_juice_report
+from logsec.apache_analyzer import export_pdf_report
 
 
 def build_parser():
@@ -29,6 +30,7 @@ def main():
     if args.command == "apache":
         results = analyze_apache_file(args.logfile, login_url=args.login_url)
         print_apache_report(results, top=args.top, bf_threshold=args.bf_threshold)
+        export_pdf_report(results)
 
         if args.output and results.get("risk_report"):
             import json
