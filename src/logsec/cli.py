@@ -16,6 +16,7 @@ def build_parser():
     ap.add_argument("--bf-threshold", type=int, default=3, help="Brute-force threshold (default: 3)")
     ap.add_argument("--output", help="Save risk report as JSON file (e.g. report.json)")
     ap.add_argument("--no-ai", action="store_true", help="Skip AI analysis and show risk report only")
+    ap.add_argument("--pdf", action="store_true", help="Export risk report as PDF file")
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
