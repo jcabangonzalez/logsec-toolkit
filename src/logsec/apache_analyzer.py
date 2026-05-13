@@ -60,24 +60,24 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
         reasons.append(f"Flood rate: {rate:.1f} req/min")
     elif rate >= 20:
         score += 2
-        reasons.append(f"Alta tasa de requests: {rate:.1f} req/min")
+        reasons.append(f"High request rate: {rate:.1f} req/min")
     elif rate >= 5:
         score += 1
-        reasons.append(f"Tasa elevada: {rate:.1f} req/min")
+        reasons.append(f"Elevated rate: {rate:.1f} req/min")
 
     if login_attempts >= 10:
         score += 4
-        reasons.append(f"Brute force probable: {login_attempts} intentos")
+        reasons.append(f"Likely brute force: {login_attempts} attempts")
     elif login_attempts >= 3:
         score += 2
-        reasons.append(f"Múltiples login attempts: {login_attempts}")
+        reasons.append(f"Multiple login attempts: {login_attempts}")
 
     if scanner_hits >= 3:
         score += 3
-        reasons.append(f"Scanner de vulnerabilidades: {scanner_hits} paths sensibles")
+        reasons.append(f"Vulnerability scanner: {scanner_hits} sensitive paths")
     elif scanner_hits >= 1:
         score += 1
-        reasons.append(f"Acceso a path sospechoso: {scanner_hits}")
+        reasons.append(f"Suspicious path access: {scanner_hits}")
 
     if login_attempts >= 3 and scanner_hits >= 1:
         score += 3
@@ -85,10 +85,10 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
 
     if errors_4xx >= 50:
         score += 2
-        reasons.append(f"Alto número de errores 4xx: {errors_4xx}")
+        reasons.append(f"High 4xx error count: {errors_4xx}")
     elif errors_4xx >= 20:
         score += 1
-        reasons.append(f"Errores 4xx elevados: {errors_4xx}")
+        reasons.append(f"Elevated 4xx errors: {errors_4xx}")
 
     if agent_score >= 8:
         score += 6
@@ -105,18 +105,18 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
 
     if flood_count > 0:
         score += 2
-        reasons.append("Flood detectado")
+        reasons.append("Flood detected")
 
     night_ratio = night_count / ip_count if ip_count > 0 else 0.0
     if night_count >= 2 and night_ratio >= 0.5:
         score += 3
-        reasons.append(f"Alta actividad nocturna: {night_ratio:.0%} de requests entre 0-5am")
+        reasons.append(f"High night activity: {night_ratio:.0%} of requests between 0-5am")
     elif night_count >= 2 and night_ratio >= 0.2:
         score += 2
-        reasons.append(f"Actividad nocturna significativa: {night_ratio:.0%} de requests entre 0-5am")
+        reasons.append(f"Significant night activity: {night_ratio:.0%} of requests between 0-5am")
     elif night_count >= 1 and night_ratio >= 0.05:
         score += 1
-        reasons.append(f"Actividad nocturna: {night_ratio:.0%} de requests entre 0-5am")
+        reasons.append(f"Night activity: {night_ratio:.0%} of requests between 0-5am")
 
     normalized = min(100, round(score * 100 / _MAX_RAW_SCORE))
 
@@ -130,6 +130,42 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
         level = "LOW"
 
     return {"ip": ip, "risk_level": level, "score": normalized, "reasons": reasons}
+
+def build_prompt(entry):
+    return f"""
+ROLE:
+You are a Senior Cybersecurity Analyst.
+
+TASK:
+Analyze step by step the risk report for IP {entry["ip"]}.
+
+CONTEXT:
+IP: {entry["ip"]}
+Risk Level: {entry["risk_level"]}
+Score: {entry["score"]}
+Reasons: {entry["reasons"]}
+
+OUTPUT:
+Respond only in JSON format with fields:
+- ip
+- risk_level
+- reasoning (array of steps)
+- recommendation
+"""
+
+def analyze_with_claude(entry):
+    client = Anthropic()
+    prompt = build_prompt(entry)
+    
+    message = client.messages.create(
+        model="claude-haiku-20240307",
+        max_tokens=1000,
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+    
+    return message.content[0].text
 
 def analyze_file(filepath: str, login_url: str = "/login"):
     ips = Counter()
