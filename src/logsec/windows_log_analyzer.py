@@ -34,6 +34,15 @@ def _first_match(patterns: list, text: str) -> Optional[str]:
     return None
 
 
+def parse_event(line: str) -> dict:
+    """Parse a Windows Event Log line and return event_id, ip, and timestamp."""
+    return {
+        "event_id": _first_match(_EVENT_ID_PATTERNS, line),
+        "ip": _first_match(_IP_PATTERNS, line),
+        "timestamp": _first_match(_TIMESTAMP_PATTERNS, line),
+    }
+
+
 def detect_brute_force(events: list, threshold: int = 5) -> list:
     """Return IPs with more than `threshold` failed logon attempts (event_id 4625)."""
     counts: dict[str, int] = {}
@@ -45,10 +54,24 @@ def detect_brute_force(events: list, threshold: int = 5) -> list:
     return [ip for ip, count in counts.items() if count > threshold]
 
 
-def parse_event(line: str) -> dict:
-    """Parse a Windows Event Log line and return event_id, ip, and timestamp."""
-    return {
-        "event_id": _first_match(_EVENT_ID_PATTERNS, line),
-        "ip": _first_match(_IP_PATTERNS, line),
-        "timestamp": _first_match(_TIMESTAMP_PATTERNS, line),
-    }
+def generate_report(events: list, brute_force_ips: list) -> str:
+    """Return a formatted report of flagged IPs and their failed logon counts."""
+    flagged = set(brute_force_ips)
+    counts: dict[str, int] = {}
+    for event in events:
+        if str(event.get("event_id")) == "4625":
+            ip = event.get("ip")
+            if ip and ip in flagged:
+                counts[ip] = counts.get(ip, 0) + 1
+
+    lines = ["Windows Event Log — Brute Force Report", "=" * 42]
+    if not counts:
+        lines.append("No flagged IPs found.")
+    else:
+        lines.append(f"{'IP Address':<20} {'Failed Logons':>13}")
+        lines.append("-" * 35)
+        for ip, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"{ip:<20} {count:>13}")
+        lines.append("-" * 35)
+        lines.append(f"{'Total flagged IPs:':<20} {len(counts):>13}")
+    return "\n".join(lines)
