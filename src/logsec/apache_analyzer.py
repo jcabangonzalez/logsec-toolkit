@@ -341,7 +341,14 @@ def print_report(results, top: int = 10, bf_threshold: int = 3):
 
 def export_pdf_report(results, output_path="report.pdf"):
     from reportlab.pdfgen import canvas
+    from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter
+
+    risk_colors = {
+        "CRITICAL": colors.red,
+        "HIGH": colors.orange,
+        "MEDIUM": colors.grey,
+    }
 
     c = canvas.Canvas(output_path, pagesize=letter)
     width, height = letter
@@ -362,6 +369,7 @@ def export_pdf_report(results, output_path="report.pdf"):
 
     risk_report = results.get("risk_report", [])
     for entry in risk_report:
+        c.setFillColor(risk_colors.get(entry["risk_level"], colors.black))
         c.setFont("Helvetica-Bold", 12)
         c.drawString(50, y, f"[{entry['risk_level']}] {entry['ip']} (score: {entry['score']})")
         y -= 15
@@ -369,6 +377,7 @@ def export_pdf_report(results, output_path="report.pdf"):
         for reason in entry["reasons"]:
             c.drawString(70, y, f"- {reason}")
             y -= 12
+        c.setFillColor(colors.black)
         y -= 10
         if y < 100:
             c.showPage()
