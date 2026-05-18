@@ -349,9 +349,12 @@ def export_pdf_report(results, output_path="report.pdf"):
 
     c.setFont("Helvetica-Bold", 16)
     c.drawString(50, y, "LogSec Toolkit - Security Report")
-    y -= 30
+    y -= 22
 
     c.setFont("Helvetica", 10)
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.drawString(50, y, f"Generated: {generated_at}")
+    y -= 18
     c.drawString(50, y, f"File: {results['filepath']}")
     y -= 15
     c.drawString(50, y, f"Total requests: {results['total_requests']}")
