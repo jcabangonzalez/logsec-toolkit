@@ -1,9 +1,13 @@
 import argparse
 import os 
 
-from logsec.apache_analyzer import analyze_file as analyze_apache_file, print_report as print_apache_report
+from logsec.apache_analyzer import (
+    analyze_file as analyze_apache_file,
+    analyze_with_claude,
+    export_pdf_report,
+    print_report as print_apache_report,
+)
 from logsec.juice_analyzer import analyze_juice_logs, print_juice_report
-from logsec.apache_analyzer import export_pdf_report
 
 
 def build_parser():
@@ -43,43 +47,16 @@ def main():
 
         if results.get("risk_report") and not args.no_ai:
             import json
-            from dotenv import load_dotenv
-            from anthropic import Anthropic
-            from google import genai
 
-            load_dotenv()
             print("\n--- STARTING AI SECURITY ANALYSIS ---")
-            report_text = json.dumps(results["risk_report"], indent=2)
-
             try:
-                print(">> Requesting analysis from Anthropic...")
-                client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                response = client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=1000,
-                    messages=[{"role": "user", "content": f"""Act as a Senior Security Engineer.
-Analyze these IPs step by step.
-For each IP identify: threat level, reason, recommended action.
-
-
-Data:
-{report_text}"""}]
-                )
-                print(">> Success with Anthropic!\n")
+                print(">> Requesting analysis from Claude...")
+                ai_results = analyze_with_claude(results["risk_report"])
+                print(">> Success!\n")
                 print("=== AI SECURITY REPORT ===")
-                print(response.content[0].text)
-
+                print(json.dumps(ai_results, indent=2))
             except Exception as e:
-                print(f">> Anthropic failed: {e}")
-                print(">> Connecting to Gemini...")
-                gemini = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-                response = gemini.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=f"Analyze these IPs and tell me who to block: {report_text}"
-                )
-                print(">> Success with Gemini!\n")
-                print("=== AI SECURITY REPORT ===")
-                print(response.text)
+                print(f">> AI analysis failed: {e}")
     if args.auto_block:
         for entry in results["risk_report"]:
             if entry["risk_level"] == "CRITICAL":

@@ -160,7 +160,7 @@ def analyze_with_claude(entry):
     prompt = build_prompt(entry)
     
     message = client.messages.create(
-    model="claude-haiku-20240307",
+    model="claude-haiku-4-5-20251001",
     max_tokens=1000,
     system="Respond only in JSON format. Do not include any text, markdown, or explanation outside the JSON object.",
     messages=[

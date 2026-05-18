@@ -137,49 +137,64 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
 
     return {"ip": ip, "risk_level": level, "score": normalized, "reasons": reasons}
 
-def build_prompt(entry):
+def build_prompt(entries):
+    if not entries:
+        return ""
+
+    context_blocks = []
+    for entry in entries:
+        context_blocks.append(
+            f"- IP: {entry['ip']}\n"
+            f"  Risk Level: {entry['risk_level']}\n"
+            f"  Score: {entry['score']}\n"
+            f"  Reasons: {entry['reasons']}\n"
+        )
+
+    ips_list = ", ".join(entry["ip"] for entry in entries)
     return f"""
 ROLE:
 You are a Senior Cybersecurity Analyst.
 
 TASK:
-Classify the threat level and provide a recommendation for IP {entry["ip"]}.
+Classify the threat level and provide a recommendation for each of the following IPs: {ips_list}
 
 CONTEXT:
-IP: {entry["ip"]}
-Risk Level: {entry["risk_level"]}
-Score: {entry["score"]}
-Reasons: {entry["reasons"]}
-
+{"".join(context_blocks)}
 OUTPUT:
-Return ONLY this JSON object. No text before or after it:
-{{
-  "ip": "{entry["ip"]}",
-  "risk_level": "{entry["risk_level"]}",
-  "reasoning": ["reason 1", "reason 2"],
-  "recommendation": "one action"
-}}
+Return ONLY a JSON array with one object per IP, in the same order as listed above. No text before or after it:
+[
+  {{
+    "ip": "<ip>",
+    "risk_level": "<level>",
+    "reasoning": ["reason 1", "reason 2"],
+    "recommendation": "one action"
+  }}
+]
 """
 
-def analyze_with_claude(entry):
+
+def analyze_with_claude(entries):
+    if not entries:
+        return []
+
     client = Anthropic()
-    prompt = build_prompt(entry)
-    
+    prompt = build_prompt(entries)
+
     message = client.messages.create(
-        model="claude-haiku-20240307",
-        max_tokens=1000,
-        system="Respond only in JSON format. Do not include any text, markdown, or explanation outside the JSON object.",
-        messages=[
-            {"role": "user", "content": prompt}
-        ]
+        model="claude-haiku-4-5-20251001",
+        max_tokens=min(4096, 500 + 250 * len(entries)),
+        system=(
+            "Respond only in JSON format. Do not include any text, markdown, or explanation "
+            "outside the JSON array."
+        ),
+        messages=[{"role": "user", "content": prompt}],
     )
-    
-    text = message.content[0].text
-    # Strip markdown code fences if present
-    text = re.sub(r"```json|```", "", text).strip()
-    return text
-    
-    return message.content[0].text
+
+    text = re.sub(r"```json|```", "", message.content[0].text).strip()
+    parsed = json.loads(text)
+    if isinstance(parsed, list):
+        return parsed
+    return [parsed]
 
 def analyze_file(filepath: str, login_url: str = "/login"):
     ips = Counter()
