@@ -1,4 +1,5 @@
 import argparse
+import os 
 
 from logsec.apache_analyzer import analyze_file as analyze_apache_file, print_report as print_apache_report
 from logsec.juice_analyzer import analyze_juice_logs, print_juice_report
@@ -17,6 +18,7 @@ def build_parser():
     ap.add_argument("--output", help="Save risk report as JSON file (e.g. report.json)")
     ap.add_argument("--no-ai", action="store_true", help="Skip AI analysis and show risk report only")
     ap.add_argument("--pdf", action="store_true", help="Export risk report as PDF file")
+    ap.add_argument("--auto-block", action="store_true", help="Auto-block CRITICAL IPs using iptables")
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
@@ -40,7 +42,7 @@ def main():
             print(f"\n[+] Risk report saved to {args.output}")
 
         if results.get("risk_report") and not args.no_ai:
-            import json, os
+            import json
             from dotenv import load_dotenv
             from anthropic import Anthropic
             from google import genai
@@ -78,6 +80,12 @@ Data:
                 print(">> Success with Gemini!\n")
                 print("=== AI SECURITY REPORT ===")
                 print(response.text)
+    if args.auto_block:
+        for entry in results["risk_report"]:
+            if entry["risk_level"] == "CRITICAL":
+                ip = entry["ip"]
+                os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
+                print(f"[BLOCKED] {ip}")   
         return
 
     if args.command == "juice":
