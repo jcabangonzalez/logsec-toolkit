@@ -2,7 +2,11 @@ import re
 import os
 import json
 import time
+import smtplib
 import requests
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from collections import Counter
 from datetime import datetime
 from dotenv import load_dotenv
@@ -469,4 +473,36 @@ def export_pdf_report(results, output_path="report.pdf"):
     print(f"\nPDF report saved to: {output_path}")
 
 
+def send_pdf_report(pdf_path: str, recipient_email: str) -> None:
+    sender = os.getenv("GMAIL_SENDER")
+    app_password = os.getenv("GMAIL_APP_PASSWORD")
+
+    if not all([sender, app_password]):
+        print("Configure GMAIL_SENDER and GMAIL_APP_PASSWORD in .env")
+        return
+
+    if not os.path.isfile(pdf_path):
+        print(f"PDF not found: {pdf_path}")
+        return
+
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = recipient_email
+    msg["Subject"] = "LogSec Toolkit - Security Report"
+    msg.attach(MIMEText("Attached is the LogSec security analysis report.", "plain"))
+
+    with open(pdf_path, "rb") as f:
+        attachment = MIMEApplication(f.read(), _subtype="pdf")
+        attachment.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=os.path.basename(pdf_path),
+        )
+        msg.attach(attachment)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(sender, app_password)
+        server.sendmail(sender, recipient_email, msg.as_string())
+
+    print(f"PDF report sent to {recipient_email}")
 
