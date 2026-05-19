@@ -17,3 +17,4 @@ Thumbs.db
 
 # Reports
 reports/*.json
+src/.env
