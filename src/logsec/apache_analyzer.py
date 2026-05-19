@@ -22,6 +22,7 @@ log_pattern = re.compile(
 
 FLOOD_THRESHOLD = 10
 _MAX_RAW_SCORE = 27
+SEEN_IPS_FILE = os.path.join(os.path.dirname(__file__), "seen_ips.json")
 
 SUSPICIOUS_AGENTS = {
     "sqlmap": 4,
@@ -308,6 +309,32 @@ def load_blocklist(filepath):
     return ips
 blocklist = load_blocklist("../samples/blocklist.txt")
 
+
+def load_seen_ips(filepath: str = SEEN_IPS_FILE) -> set:
+    if not os.path.isfile(filepath):
+        return set()
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return set(data) if isinstance(data, list) else set()
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def save_seen_ips(seen: set, filepath: str = SEEN_IPS_FILE) -> None:
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(sorted(seen), f, indent=2)
+
+
+def alert_ip(entry: dict) -> None:
+    colors = {"CRITICAL": "\033[91m", "HIGH": "\033[93m", "MEDIUM": "\033[97m", "LOW": "\033[92m"}
+    reset = "\033[0m"
+    color = colors.get(entry["risk_level"], reset)
+    print(f"{color}[ALERT] [{entry['risk_level']}] {entry['ip']} (score: {entry['score']}){reset}")
+    for reason in entry["reasons"]:
+        print(f"  → {reason}")
+
+
 def print_report(results, top: int = 10, bf_threshold: int = 3):
     if results.get("error"):
         err = results["error"]
@@ -345,14 +372,19 @@ def print_report(results, top: int = 10, bf_threshold: int = 3):
     risk_report = results.get("risk_report", [])
     if risk_report:
         print("\n=== RISK REPORT ===")
+        seen_ips = load_seen_ips()
+        seen_updated = False
         for entry in risk_report:
-            if entry["score"] > 0:
-                colors = {"CRITICAL": "\033[91m", "HIGH": "\033[93m", "MEDIUM": "\033[97m", "LOW": "\033[92m"}
-                reset = "\033[0m"
-                color = colors.get(entry['risk_level'], reset)
-                print(f"{color}[{entry['risk_level']}] {entry['ip']} (score: {entry['score']}){reset}")
-                for reason in entry["reasons"]:
-                    print(f"  → {reason}")
+            if entry["score"] <= 0:
+                continue
+            ip = entry["ip"]
+            if ip in seen_ips:
+                continue
+            alert_ip(entry)
+            seen_ips.add(ip)
+            seen_updated = True
+        if seen_updated:
+            save_seen_ips(seen_ips)
 
 def export_pdf_report(results, output_path="report.pdf"):
     from reportlab.pdfgen import canvas
