@@ -383,6 +383,41 @@ def export_pdf_report(results, output_path="report.pdf"):
     y -= 30
 
     risk_report = results.get("risk_report", [])
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Executive Summary")
+    y -= 20
+
+    c.setFont("Helvetica", 10)
+    total_flagged = len(risk_report)
+    c.drawString(50, y, f"Total flagged IPs: {total_flagged}")
+    y -= 14
+
+    level_counts = Counter(entry["risk_level"] for entry in risk_report)
+    for level in ("CRITICAL", "HIGH", "MEDIUM"):
+        c.drawString(50, y, f"  {level}: {level_counts.get(level, 0)}")
+        y -= 12
+
+    if risk_report:
+        top = risk_report[0]
+        first_reason = top["reasons"][0] if top.get("reasons") else "N/A"
+        c.drawString(
+            50,
+            y,
+            f"Top priority: {top['ip']} ({top['risk_level']}, score {top['score']})",
+        )
+        y -= 12
+        c.drawString(50, y, f"  Primary reason: {first_reason}")
+        y -= 14
+    else:
+        c.drawString(50, y, "Top priority: None")
+        y -= 14
+
+    y -= 16
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Risk Report")
+    y -= 22
+
     for entry in risk_report:
         c.setFillColor(risk_colors.get(entry["risk_level"], colors.black))
         c.setFont("Helvetica-Bold", 12)
