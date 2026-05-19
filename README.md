@@ -6,24 +6,47 @@
 ![CLI](https://img.shields.io/badge/interface-CLI-black)
 
 Defensive log analysis CLI for Apache access logs and OWASP Juice Shop docker logs.
-Combines rule-based threat detection with AI-powered analysis (Claude + Gemini fallback).
+Combines rule-based threat detection with AI-powered batch analysis (Claude).
 
 Designed for defensive security practice and log-based threat detection in lab environments.
 
 ## Features
 
+### Core analysis
+
 - Apache/Nginx access log parsing and analysis
 - Top IP detection and traffic analysis
 - 4xx / 5xx error tracking
 - Brute-force login detection heuristics
-- Vulnerability scanner detection
+- Vulnerability scanner detection (sensitive paths + suspicious User-Agents)
 - Flood/DDoS pattern detection
 - OWASP Juice Shop docker log parsing
 - Suspicious admin login indicator detection (lab context)
 - Unified risk scoring per IP (LOW / MEDIUM / HIGH / CRITICAL)
-- AI-powered security report via Claude API (Gemini fallback)
-- JSON-ready structured output
+- JSON-ready structured output (`--output`)
 - Command-line interface (CLI)
+
+### Threat intelligence
+
+- **Threat intel blocklist** — IPs listed in `samples/blocklist.txt` receive an elevated risk score and a dedicated reason in the risk report (`IP found in threat intelligence blocklist`). Edit this file to add known-malicious addresses for your environment.
+
+### Reporting & delivery
+
+- **Executive summary PDF** — `--pdf` generates `report.pdf` with an executive summary (flagged IP counts by severity, top priority IP) and a full risk breakdown per IP.
+- **Email delivery** — `--email ADDRESS` builds the PDF and sends it via Gmail SMTP (requires `GMAIL_SENDER` and `GMAIL_APP_PASSWORD` in `.env`).
+
+### AI analysis
+
+- **Batch AI analysis** — All flagged IPs in the risk report are sent to Claude in a single API request. The model returns one JSON object per IP (threat classification + recommendation). Use `--no-ai` to skip.
+
+### Alerting & response
+
+- **Alert deduplication** — Console alerts for MEDIUM+ IPs are suppressed on repeat runs if the IP was already alerted. State is persisted in `src/logsec/seen_ips.json`. Delete or edit that file to reset deduplication.
+- **Auto-block** — `--auto-block` adds an `iptables DROP` rule for each IP rated **CRITICAL** (requires `sudo`; lab use only).
+
+### Automation
+
+- **Cron job scheduling** — Run periodic scans against live or rotated logs (see [Scheduled runs](#scheduled-runs-cron) below).
 
 ## Installation
 
@@ -37,71 +60,140 @@ cd logsec-toolkit
 ## Setup
 
 ```bash
-pip install anthropic google-genai python-dotenv requests
+pip install anthropic google-genai python-dotenv requests reportlab
 ```
 
-Create `.env` with `ANTHROPIC_API_KEY` and `GEMINI_API_KEY`.
+Create `.env` in `src/` (or your working directory) with:
+
+| Variable | Purpose |
+|----------|---------|
+| `ANTHROPIC_API_KEY` | Claude API for batch AI analysis |
+| `GEMINI_API_KEY` | Optional; reserved for future fallback |
+| `GMAIL_SENDER` | Sender address for `--email` |
+| `GMAIL_APP_PASSWORD` | Gmail app password for `--email` |
+
+Customize the threat intel blocklist:
+
+```bash
+# One IP per line
+samples/blocklist.txt
+```
 
 ## Usage
 
-PYTHONPATH=logsec-toolkit/src python3 -m logsec apache logsec-toolkit/samples/access.log
-
-### Apache Log Security Analyzer
-
-Analyze Apache access logs and detect suspicious activity.
-
-#### Run the analyzer
+From the `logsec-toolkit` directory:
 
 ```bash
-python3 analyzer.py access.log
+./logsec-run.sh apache samples/access.log
 ```
 
-#### What it detects
-
-* Top IP addresses by request volume
-* HTTP error statistics
-* Possible brute-force login attempts
-* Suspicious high-frequency IP activity
-
-### Apache logs
+Or explicitly:
 
 ```bash
-PYTHONPATH=src python3 -m logsec.cli apache samples/access.log --top 5
+cd src
+PYTHONPATH=. python3 -m logsec.cli apache ../samples/access.log
+```
+
+### Apache logs — common options
+
+| Flag | Description |
+|------|-------------|
+| `--top N` | Show top N IPs (default: 10) |
+| `--login-url PATH` | Login endpoint for brute-force detection (default: `/login`) |
+| `--bf-threshold N` | Brute-force alert threshold (default: 3) |
+| `--output FILE` | Save risk report as JSON |
+| `--pdf` | Export executive summary + risk report PDF |
+| `--email ADDRESS` | Generate PDF and email it |
+| `--no-ai` | Skip batch Claude analysis |
+| `--auto-block` | Block CRITICAL IPs via iptables |
+
+#### Basic scan
+
+```bash
+./logsec-run.sh apache samples/access.log --top 5
+```
+
+#### PDF executive summary
+
+```bash
+./logsec-run.sh apache samples/access.log --pdf
+```
+
+#### Email report
+
+```bash
+./logsec-run.sh apache samples/access.log --email security@example.com
+```
+
+#### Full pipeline (PDF + AI + auto-block)
+
+```bash
+./logsec-run.sh apache samples/access.log --pdf --email security@example.com --auto-block
+```
+
+#### JSON export without AI
+
+```bash
+./logsec-run.sh apache samples/access.log --output report.json --no-ai
 ```
 
 ### OWASP Juice Shop logs
 
 ```bash
-PYTHONPATH=src python3 -m logsec.cli juice samples/juice_shop_docker.log --top 10
+./logsec-run.sh juice samples/juice_shop_docker.log --top 10
 ```
 
-### Example JSON Output
+### What Apache analysis detects
+
+- Top IP addresses by request volume
+- HTTP 4xx/5xx error statistics
+- Brute-force login attempts (POST to login URL)
+- Scanner probes against sensitive paths (`/.env`, `/wp-admin`, etc.)
+- Suspicious User-Agents (sqlmap, nikto, nmap, …)
+- Request-rate floods and off-hours activity
+- Blocklist matches from threat intelligence feed
+
+### Alert deduplication (`seen_ips.json`)
+
+On each run, IPs that already triggered a console alert are skipped. New alerts are appended to `src/logsec/seen_ips.json`. This avoids duplicate noise when the same log file or recurring traffic is analyzed on a schedule.
+
+To alert again on a previously seen IP, remove that IP from `seen_ips.json` or delete the file.
+
+### Scheduled runs (cron)
+
+Example: analyze yesterday’s Apache log every day at 06:00, email the PDF, and rely on deduplication for repeat offenders:
+
+```cron
+0 6 * * * cd /path/to/logsec-toolkit && ./logsec-run.sh apache /var/log/apache2/access.log.1 --pdf --email you@example.com >> /var/log/logsec-cron.log 2>&1
+```
+
+Example: hourly scan with JSON output (no email):
+
+```cron
+0 * * * * cd /path/to/logsec-toolkit && ./logsec-run.sh apache /var/log/apache2/access.log --output /tmp/logsec-report.json --no-ai
+```
+
+Ensure the cron user has read access to log files, valid `.env` API keys, and (if using `--auto-block`) passwordless `sudo` for `iptables` — only in controlled lab environments.
+
+### Example JSON output
 
 ```json
-{
-  "summary": {
-    "total_requests": 10,
-    "errors_4xx": 0,
-    "errors_5xx": 0
-  },
-  "top_ips": [
-    {"ip": "127.0.0.1", "count": 5},
-    {"ip": "192.168.1.10", "count": 5}
-  ],
-  "alerts": [
-    {
-      "type": "brute_force",
-      "endpoint": "/login",
-      "ip": "192.168.1.10",
-      "attempts": 5
-    }
-  ]
-}
+[
+  {
+    "ip": "192.168.1.10",
+    "risk_level": "CRITICAL",
+    "score": 85,
+    "reasons": [
+      "IP found in threat intelligence blocklist: 192.168.1.10",
+      "Likely brute force: 12 attempts"
+    ]
+  }
+]
 ```
 
 ## Stack
 
 - Python 3.10+
-- Anthropic Claude API (claude-haiku-4-5)
-- Google Gemini API (fallback)
-- argparse, collections, re, dotenv
+- Anthropic Claude API (`claude-haiku-4-5`)
+- ReportLab (PDF reports)
+- argparse, collections, re, dotenv, smtplib
