@@ -25,7 +25,7 @@ log_pattern = re.compile(
 )
 
 FLOOD_THRESHOLD = 10
-_MAX_RAW_SCORE = 27
+_MAX_RAW_SCORE = 30
 SEEN_IPS_FILE = os.path.join(os.path.dirname(__file__), "seen_ips.json")
 
 SUSPICIOUS_AGENTS = {
@@ -49,6 +49,25 @@ SCANNER_PATHS = {
     "/console": 1,
 }
 
+SQL_PATTERNS = {
+    "union select": 3,
+    "union%20select": 3,
+    "or 1=1": 3,
+    "or%201=1": 3,
+    "' or '": 2,
+    "%27%20or%20": 2,
+    "drop table": 3,
+    "information_schema": 2,
+    "sleep(": 2,
+    "benchmark(": 2,
+    ";--": 2,
+    "';--": 2,
+    "concat(": 1,
+    "char(": 1,
+    "@@version": 2,
+    "waitfor delay": 2,
+}
+
 def parse_line(line: str):
     match = log_pattern.match(line)
     if not match:
@@ -58,7 +77,7 @@ def parse_line(line: str):
     data["size"] = 0 if data["size"] == "-" else int(data["size"])
     return data
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0) -> dict:
     score = 0
     reasons = []
     
@@ -89,6 +108,13 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     elif scanner_hits >= 1:
         score += 1
         reasons.append(f"Suspicious path access: {scanner_hits}")
+
+    if sql_hits >= 3:
+        score += 6
+        reasons.append(f"SQL injection: {sql_hits} suspicious query patterns")
+    elif sql_hits >= 1:
+        score += 4
+        reasons.append(f"Possible SQL injection: {sql_hits} patterns in URL")
 
     if login_attempts >= 3 and scanner_hits >= 1:
         score += 3
@@ -205,6 +231,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     ips = Counter()
     login_attempts = Counter()
     scanners = Counter()
+    sql_injection = Counter()
     flood_ips = Counter()
     night_requests = Counter()
     suspicious_agents = Counter()
@@ -250,6 +277,17 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                             scanners[parsed["ip"]] += 1 * path_weight
                         elif parsed["status"] in (404, 500, 502):
                             scanners[parsed["ip"]] += 0.5 * path_weight
+                url_lower = parsed["url"].lower()
+                for pattern, pattern_weight in SQL_PATTERNS.items():
+                    if pattern in url_lower:
+                        if parsed["status"] == 200:
+                            sql_injection[parsed["ip"]] += 3 * pattern_weight
+                        elif parsed["status"] == 401:
+                            sql_injection[parsed["ip"]] += 2 * pattern_weight
+                        elif parsed["status"] == 403:
+                            sql_injection[parsed["ip"]] += 1 * pattern_weight
+                        elif parsed["status"] in (404, 500, 502):
+                            sql_injection[parsed["ip"]] += 0.5 * pattern_weight
                 user_agent = (parsed.get("user_agent") or "").lower()
                 for agent, agent_weight in SUSPICIOUS_AGENTS.items():
                     if agent in user_agent:
@@ -281,7 +319,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
 
     risk_report = []
     for ip in ips:
-        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0), suspicious_agents.get(ip, 0), rates.get(ip, 0.0))
+        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0), suspicious_agents.get(ip, 0), rates.get(ip, 0.0), sql_injection.get(ip, 0))
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
 
@@ -297,6 +335,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         "ips": ips,
         "login_attempts": dict(login_attempts),
         "scanners": dict(scanners),
+        "sql_injection": dict(sql_injection),
         "suspicious_agents": dict(suspicious_agents),
         "flood_ips": dict(flood_ips),
         "night_requests": dict(night_requests),
