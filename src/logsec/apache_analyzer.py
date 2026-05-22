@@ -26,7 +26,13 @@ log_pattern = re.compile(
 
 FLOOD_THRESHOLD = 10
 _MAX_RAW_SCORE = 30
+_RECENT_REQUESTS_MAX = 20
 SEEN_IPS_FILE = os.path.join(os.path.dirname(__file__), "seen_ips.json")
+
+# Per-IP request sequences capture order and context (method, URL, status, time).
+# Isolated signals (e.g. one 404 or one login POST) are noisy; ordered sequences
+# support behavioral correlation—recon then exploit, scan bursts, auth-then-admin—
+# which improves detection quality when attack-chain rules are added later.
 
 WHITELIST = {
     "127.0.0.1",
@@ -106,6 +112,26 @@ def parse_line(line: str):
     data["status"] = int(data["status"])
     data["size"] = 0 if data["size"] == "-" else int(data["size"])
     return data
+
+
+def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
+    """Append one lightweight event; cap history so profiles stay bounded in memory."""
+    ip = parsed["ip"]
+    if ip not in ip_profiles:
+        ip_profiles[ip] = {"requests": 0, "recent_requests": []}
+    profile = ip_profiles[ip]
+    profile["requests"] += 1
+    profile["recent_requests"].append(
+        {
+            "method": parsed["method"],
+            "url": parsed["url"],
+            "status": parsed["status"],
+            "timestamp": parsed["datetime"],
+        }
+    )
+    if len(profile["recent_requests"]) > _RECENT_REQUESTS_MAX:
+        profile["recent_requests"].pop(0)
+
 
 def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0) -> dict:
     if is_whitelisted(ip):
@@ -274,6 +300,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     errors_5xx = 0
     errors_4xx_per_ip = Counter()
     errors_5xx_per_ip = Counter()
+    ip_profiles = {}
     redirects = 0
     total_requests = 0
     parsed_lines = 0
@@ -288,6 +315,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                 total_requests += 1
                 if is_whitelisted(parsed["ip"]):
                     continue
+                _record_ip_request(ip_profiles, parsed)
                 ips[parsed["ip"]] += 1
                 try:
                     dt = datetime.strptime(parsed["datetime"], "%d/%b/%Y:%H:%M:%S %z")
@@ -376,6 +404,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         "night_requests": dict(night_requests),
         "errors_4xx_per_ip": dict(errors_4xx_per_ip),
         "errors_5xx_per_ip": dict(errors_5xx_per_ip),
+        "ip_profiles": ip_profiles,
         "risk_report": risk_report,
     }
 
