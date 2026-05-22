@@ -28,6 +28,36 @@ FLOOD_THRESHOLD = 10
 _MAX_RAW_SCORE = 30
 SEEN_IPS_FILE = os.path.join(os.path.dirname(__file__), "seen_ips.json")
 
+WHITELIST = {
+    "127.0.0.1",
+    "::1",
+    "127.",
+    "10.",
+    "192.168.",
+    "172.16.",
+    "172.17.",
+    "172.18.",
+    "172.19.",
+    "172.20.",
+    "172.21.",
+    "172.22.",
+    "172.23.",
+    "172.24.",
+    "172.25.",
+    "172.26.",
+    "172.27.",
+    "172.28.",
+    "172.29.",
+    "172.30.",
+    "172.31.",
+}
+
+
+def is_whitelisted(ip: str) -> bool:
+    if ip in WHITELIST:
+        return True
+    return any(ip.startswith(prefix) for prefix in WHITELIST if prefix.endswith("."))
+
 SUSPICIOUS_AGENTS = {
     "sqlmap": 4,
     "nikto": 3,
@@ -78,6 +108,9 @@ def parse_line(line: str):
     return data
 
 def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0) -> dict:
+    if is_whitelisted(ip):
+        return {"ip": ip, "risk_level": "LOW", "score": 0, "reasons": []}
+
     score = 0
     reasons = []
     
@@ -253,6 +286,8 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                     continue
                 parsed_lines += 1
                 total_requests += 1
+                if is_whitelisted(parsed["ip"]):
+                    continue
                 ips[parsed["ip"]] += 1
                 try:
                     dt = datetime.strptime(parsed["datetime"], "%d/%b/%Y:%H:%M:%S %z")
