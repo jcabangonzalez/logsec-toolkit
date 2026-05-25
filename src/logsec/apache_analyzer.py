@@ -28,11 +28,18 @@ FLOOD_THRESHOLD = 10
 _MAX_RAW_SCORE = 30
 _RECENT_REQUESTS_MAX = 20
 SEEN_IPS_FILE = os.path.join(os.path.dirname(__file__), "seen_ips.json")
+RISK_LEVELS = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 # Per-IP request sequences capture order and context (method, URL, status, time).
 # Isolated signals (e.g. one 404 or one login POST) are noisy; ordered sequences
 # support behavioral correlation—recon then exploit, scan bursts, auth-then-admin—
 # which improves detection quality when attack-chain rules are added later.
+
+# Path diversity (unique URLs per IP) complements signature-based checks: recon tools
+# and vulnerability scanners probe many endpoints in a short window, while normal
+# users revisit a small set of pages (home, login, a few app routes). High diversity
+# is a lightweight behavioral signal that flags spray-and-pray scanning without
+# matching a specific malicious path or User-Agent string.
 
 WHITELIST = {
     "127.0.0.1",
@@ -118,9 +125,10 @@ def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
     """Append one lightweight event; cap history so profiles stay bounded in memory."""
     ip = parsed["ip"]
     if ip not in ip_profiles:
-        ip_profiles[ip] = {"requests": 0, "recent_requests": []}
+        ip_profiles[ip] = {"requests": 0, "recent_requests": [], "unique_paths": set()}
     profile = ip_profiles[ip]
     profile["requests"] += 1
+    profile["unique_paths"].add(parsed["url"])
     profile["recent_requests"].append(
         {
             "method": parsed["method"],
@@ -133,7 +141,7 @@ def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
         profile["recent_requests"].pop(0)
 
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0, path_diversity: int = 0) -> dict:
     if is_whitelisted(ip):
         return {"ip": ip, "risk_level": "LOW", "score": 0, "reasons": []}
 
@@ -213,6 +221,17 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     elif night_count >= 1 and night_ratio >= 0.05:
         score += 1
         reasons.append(f"Night activity: {night_ratio:.0%} of requests between 0-5am")
+
+    # Endpoint diversity: scanners enumerate many paths; legitimate clients stay focused.
+    if path_diversity >= 50:
+        score += 4
+        reasons.append(f"High path diversity: {path_diversity} unique paths")
+    elif path_diversity >= 20:
+        score += 2
+        reasons.append(f"Elevated path diversity: {path_diversity} unique paths")
+    elif path_diversity >= 10:
+        score += 1
+        reasons.append(f"Moderate path diversity: {path_diversity} unique paths")
 
     normalized = min(100, round(score * 100 / _MAX_RAW_SCORE))
 
@@ -382,7 +401,21 @@ def analyze_file(filepath: str, login_url: str = "/login"):
 
     risk_report = []
     for ip in ips:
-        risk = classify_risk(ip, ips[ip], login_attempts.get(ip, 0), scanners.get(ip, 0), flood_ips.get(ip, 0), night_requests.get(ip, 0), errors_4xx_per_ip.get(ip, 0), suspicious_agents.get(ip, 0), rates.get(ip, 0.0), sql_injection.get(ip, 0))
+        profile = ip_profiles.get(ip, {})
+        path_diversity = len(profile.get("unique_paths", ()))
+        risk = classify_risk(
+            ip,
+            ips[ip],
+            login_attempts.get(ip, 0),
+            scanners.get(ip, 0),
+            flood_ips.get(ip, 0),
+            night_requests.get(ip, 0),
+            errors_4xx_per_ip.get(ip, 0),
+            suspicious_agents.get(ip, 0),
+            rates.get(ip, 0.0),
+            sql_injection.get(ip, 0),
+            path_diversity,
+        )
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
 
@@ -417,20 +450,25 @@ def load_blocklist(filepath):
 blocklist = load_blocklist("../samples/blocklist.txt")
 
 
-def load_seen_ips(filepath: str = SEEN_IPS_FILE) -> set:
+def load_seen_ips(filepath: str = SEEN_IPS_FILE) -> dict[str, str]:
     if not os.path.isfile(filepath):
-        return set()
+        return {}
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return set(data) if isinstance(data, list) else set()
+        if isinstance(data, dict):
+            return {ip: level for ip, level in data.items() if isinstance(level, str)}
+        if isinstance(data, list):
+            # Legacy format: IP list only; assume prior alert was at least MEDIUM.
+            return {ip: "MEDIUM" for ip in data if isinstance(ip, str)}
+        return {}
     except (json.JSONDecodeError, OSError):
-        return set()
+        return {}
 
 
-def save_seen_ips(seen: set, filepath: str = SEEN_IPS_FILE) -> None:
+def save_seen_ips(seen: dict[str, str], filepath: str = SEEN_IPS_FILE) -> None:
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(sorted(seen), f, indent=2)
+        json.dump(dict(sorted(seen.items())), f, indent=2)
 
 
 def alert_ip(entry: dict) -> None:
@@ -485,10 +523,15 @@ def print_report(results, top: int = 10, bf_threshold: int = 3):
             if entry["score"] <= 0:
                 continue
             ip = entry["ip"]
-            if ip in seen_ips:
+            level = entry["risk_level"]
+            stored_level = seen_ips.get(ip)
+            if (
+                stored_level is not None
+                and RISK_LEVELS.get(level, 0) <= RISK_LEVELS.get(stored_level, 0)
+            ):
                 continue
             alert_ip(entry)
-            seen_ips.add(ip)
+            seen_ips[ip] = level
             seen_updated = True
         if seen_updated:
             save_seen_ips(seen_ips)
@@ -608,4 +651,3 @@ def send_pdf_report(pdf_path: str, recipient_email: str) -> None:
         server.sendmail(sender, recipient_email, msg.as_string())
 
     print(f"PDF report sent to {recipient_email}")
-
