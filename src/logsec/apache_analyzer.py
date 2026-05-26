@@ -447,7 +447,7 @@ def load_blocklist(filepath):
         for line in f:
             ips.add(line.strip())
     return ips
-blocklist = load_blocklist("../samples/blocklist.txt")
+blocklist = load_blocklist(os.path.join(os.path.dirname(__file__), "../../samples/blocklist.txt"))
 
 
 def load_seen_ips(filepath: str = SEEN_IPS_FILE) -> dict[str, str]:
