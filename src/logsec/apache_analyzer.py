@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from google import genai
@@ -141,7 +141,7 @@ def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
         profile["recent_requests"].pop(0)
 
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0, path_diversity: int = 0) -> dict:
+def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0, path_diversity: int = 0, burst_count: int = 0) -> dict:
     if is_whitelisted(ip):
         return {"ip": ip, "risk_level": "LOW", "score": 0, "reasons": []}
 
@@ -232,7 +232,12 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     elif path_diversity >= 10:
         score += 1
         reasons.append(f"Moderate path diversity: {path_diversity} unique paths")
-
+    if burst_count >= 10:
+        score += 4
+        reasons.append(f"Request burst: {burst_count} requests within 60 seconds")
+    elif burst_count >= 5:
+        score += 2
+        reasons.append(f"Moderate burst: {burst_count} requests within 60 seconds")
     normalized = min(100, round(score * 100 / _MAX_RAW_SCORE))
 
     if normalized >= 70:
@@ -311,6 +316,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     scanners = Counter()
     sql_injection = Counter()
     flood_ips = Counter()
+    burst_ips = Counter()
     night_requests = Counter()
     suspicious_agents = Counter()
     first_seen = {}
@@ -399,6 +405,24 @@ def analyze_file(filepath: str, login_url: str = "/login"):
         else:
             rates[ip] = 0.0
 
+    burst_ips = Counter()
+    for ip, profile in ip_profiles.items():
+        timestamps = []
+        for req in profile.get("recent_requests", []):
+            try:
+                dt = datetime.strptime(req["timestamp"], "%d/%b/%Y:%H:%M:%S %z")
+                timestamps.append(dt)
+            except:
+                continue
+        timestamps.sort()
+        window = timedelta(seconds=60)
+        burst_threshold = 10
+        for i in range(len(timestamps)):
+            window_requests = [t for t in timestamps[i:] if t - timestamps[i] <= window]
+            if len(window_requests) >= burst_threshold:
+                burst_ips[ip] = len(window_requests)
+                break
+    
     risk_report = []
     for ip in ips:
         profile = ip_profiles.get(ip, {})
@@ -415,6 +439,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
             rates.get(ip, 0.0),
             sql_injection.get(ip, 0),
             path_diversity,
+            burst_ips.get(ip, 0),
         )
         if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
             risk_report.append(risk)
