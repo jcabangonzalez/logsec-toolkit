@@ -33,13 +33,7 @@ RISK_LEVELS = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 # Per-IP request sequences capture order and context (method, URL, status, time).
 # Isolated signals (e.g. one 404 or one login POST) are noisy; ordered sequences
 # support behavioral correlation—recon then exploit, scan bursts, auth-then-admin—
-# which improves detection quality when attack-chain rules are added later.
-
-# Path diversity (unique URLs per IP) complements signature-based checks: recon tools
-# and vulnerability scanners probe many endpoints in a short window, while normal
-# users revisit a small set of pages (home, login, a few app routes). High diversity
-# is a lightweight behavioral signal that flags spray-and-pray scanning without
-# matching a specific malicious path or User-Agent string.
+# which improves detection quality when attack-chain rules are added later.skybyassaultT
 
 WHITELIST = {
     "127.0.0.1",
@@ -125,10 +119,11 @@ def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
     """Append one lightweight event; cap history so profiles stay bounded in memory."""
     ip = parsed["ip"]
     if ip not in ip_profiles:
-        ip_profiles[ip] = {"requests": 0, "recent_requests": [], "unique_paths": set()}
+        ip_profiles[ip] = {"requests": 0, "recent_requests": [], "unique_paths": set(), "timestamps": []}
     profile = ip_profiles[ip]
     profile["requests"] += 1
     profile["unique_paths"].add(parsed["url"])
+    profile["timestamps"].append(parsed["datetime"])
     profile["recent_requests"].append(
         {
             "method": parsed["method"],
@@ -408,12 +403,12 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     burst_ips = Counter()
     for ip, profile in ip_profiles.items():
         timestamps = []
-        for req in profile.get("recent_requests", []):
-            try:
-                dt = datetime.strptime(req["timestamp"], "%d/%b/%Y:%H:%M:%S %z")
-                timestamps.append(dt)
-            except:
-                continue
+    for ts in profile.get("timestamps", []):
+        try:
+            dt = datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z")
+            timestamps.append(dt)
+        except:
+            continue
         timestamps.sort()
         window = timedelta(seconds=60)
         burst_threshold = 10
