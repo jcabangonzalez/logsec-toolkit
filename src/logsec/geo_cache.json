@@ -1,0 +1,22 @@
+{
+  "1.2.3.4": {
+    "cached_at": "2026-06-01T19:00:02.778138",
+    "data": {
+      "country": "Australia",
+      "country_code": "AU",
+      "city": "South Brisbane",
+      "lat": -27.4767,
+      "lon": 153.017
+    }
+  },
+  "5.5.5.5": {
+    "cached_at": "2026-06-01T19:00:02.998818",
+    "data": {
+      "country": "Germany",
+      "country_code": "DE",
+      "city": "Frankfurt am Main",
+      "lat": 50.1109,
+      "lon": 8.68213
+    }
+  }
+}

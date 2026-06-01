@@ -60,7 +60,7 @@ cd logsec-toolkit
 ## Setup
 
 ```bash
-pip install anthropic google-genai python-dotenv requests reportlab
+pip install anthropic google-genai python-dotenv requests reportlab pyyaml rich
 ```
 
 Create `.env` in `src/` (or your working directory) with:

@@ -1,0 +1,27 @@
+thresholds:
+  flood: 10
+  burst: 10
+  brute_force: 3
+  rate_alert: 30
+  risk_score_min: 15
+
+whitelist:
+  - "127.0.0.1"
+  - "10.0.0.0/8"
+  - "192.168.0.0/16"
+
+scan_paths:
+  - "/.env"
+  - "/backup.zip"
+  - "/wp-admin"
+
+integrations:
+  slack_webhook: "${SLACK_WEBHOOK}"
+  discord_webhook: "${DISCORD_WEBHOOK}"
+  email_enabled: true
+
+geoip:
+  enabled: true
+  provider: "ip-api.com"  # or "freegeoip.app"
+  cache_days: 30
+  timeout_seconds: 2

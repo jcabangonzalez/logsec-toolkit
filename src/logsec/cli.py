@@ -4,9 +4,14 @@ import os
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
     analyze_with_claude,
+    configure_geoip,
     export_pdf_report,
+    format_json_report,
+    load_config,
+    monitor_log,
     print_report as print_apache_report,
     send_pdf_report,
+    show_dashboard,
 )
 from logsec.juice_analyzer import analyze_juice_logs, print_juice_report
 
@@ -23,8 +28,25 @@ def build_parser():
     ap.add_argument("--output", help="Save risk report as JSON file (e.g. report.json)")
     ap.add_argument("--no-ai", action="store_true", help="Skip AI analysis and show risk report only")
     ap.add_argument("--pdf", action="store_true", help="Export risk report as PDF file")
-    ap.add_argument("--email", metavar="ADDRESS", help="Email PDF report to this address")
+    ap.add_argument("--email", metavar="ADDRESS", help="Email PDF report to this address (requires --pdf)")
+    ap.add_argument("--json", action="store_true", help="JSON output instead of text report")
+    ap.add_argument("--threshold", type=int, default=None, metavar="SCORE", help="Minimum risk score to show")
+    ap.add_argument("--config", metavar="PATH", help="YAML config file path")
+    ap.add_argument("--monitor", action="store_true", help="Real-time tail monitoring mode")
+    ap.add_argument("--dashboard", action="store_true", help="Rich terminal dashboard")
     ap.add_argument("--auto-block", action="store_true", help="Auto-block CRITICAL IPs using iptables")
+    ap.add_argument(
+        "--geo-disable",
+        action="store_true",
+        help="Skip geo-IP lookups (faster, no external API)",
+    )
+    ap.add_argument(
+        "--geo-timeout",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="Timeout in seconds for geo lookups (default: 2)",
+    )
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
@@ -37,11 +59,48 @@ def main():
     args = build_parser().parse_args()
 
     if args.command == "apache":
-        results = analyze_apache_file(args.logfile, login_url=args.login_url)
-        print_apache_report(results, top=args.top, bf_threshold=args.bf_threshold)
+        load_config(getattr(args, "config", None))
+        configure_geoip(
+            enabled=False if args.geo_disable else None,
+            timeout_seconds=args.geo_timeout,
+        )
+        if args.email and not args.pdf:
+            build_parser().error("apache: --email requires --pdf")
+
+        if args.monitor:
+            monitor_log(
+                args.logfile,
+                login_url=args.login_url,
+                dashboard=args.dashboard,
+            )
+            return
+
+        threshold = args.threshold
+        results = analyze_apache_file(
+            args.logfile,
+            login_url=args.login_url,
+            bf_threshold=args.bf_threshold,
+            risk_score_min=threshold,
+        )
+
+        if results.get("error"):
+            print_apache_report(results)
+            return
+
+        if args.dashboard:
+            show_dashboard(results)
+        elif args.json:
+            print(format_json_report(results, top=args.top))
+        else:
+            print_apache_report(
+                results,
+                top=args.top,
+                bf_threshold=args.bf_threshold,
+                threshold=threshold,
+            )
 
         pdf_path = "report.pdf"
-        if args.pdf or args.email:
+        if args.pdf:
             export_pdf_report(results, pdf_path)
         if args.email:
             send_pdf_report(pdf_path, args.email)
@@ -52,24 +111,26 @@ def main():
                 json.dump(results["risk_report"], f, indent=2)
             print(f"\n[+] Risk report saved to {args.output}")
 
-        if results.get("risk_report") and not args.no_ai:
+        risk_report = results.get("risk_report") or []
+        if risk_report and not args.no_ai and not args.json:
             import json
 
             print("\n--- STARTING AI SECURITY ANALYSIS ---")
             try:
                 print(">> Requesting analysis from Claude...")
-                ai_results = analyze_with_claude(results["risk_report"])
+                ai_results = analyze_with_claude(risk_report)
                 print(">> Success!\n")
                 print("=== AI SECURITY REPORT ===")
                 print(json.dumps(ai_results, indent=2))
             except Exception as e:
                 print(f">> AI analysis failed: {e}")
-    if args.auto_block:
-        for entry in results["risk_report"]:
-            if entry["risk_level"] == "CRITICAL":
-                ip = entry["ip"]
-                os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
-                print(f"[BLOCKED] {ip}")   
+
+        if args.auto_block:
+            for entry in results.get("risk_report", []):
+                if entry["risk_level"] == "CRITICAL":
+                    ip = entry["ip"]
+                    os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
+                    print(f"[BLOCKED] {ip}")
         return
 
     if args.command == "juice":

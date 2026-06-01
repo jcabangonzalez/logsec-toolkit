@@ -1,21 +1,40 @@
+import argparse
+import ipaddress
 import re
 import os
 import json
+import sys
 import time
 import smtplib
 import requests
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
-from collections import Counter
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+from typing import Any
+
 from anthropic import Anthropic
+from dotenv import load_dotenv
 from google import genai
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 load_dotenv()
+
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_DEFAULT_CONFIG_PATHS = (
+    Path.cwd() / "config.yaml",
+    _PACKAGE_DIR / "config.yaml",
+    _PACKAGE_DIR.parent.parent / "config.yaml",
+)
 
 log_pattern = re.compile(
     r'(?P<ip>\S+) \S+ \S+ \[(?P<datetime>[^\]]+)\] '
@@ -25,45 +44,418 @@ log_pattern = re.compile(
 )
 
 FLOOD_THRESHOLD = 10
+BURST_THRESHOLD = 10
+BF_THRESHOLD = 3
+RATE_ALERT_THRESHOLD = 30
+RISK_SCORE_MIN = 15
 _MAX_RAW_SCORE = 30
 _RECENT_REQUESTS_MAX = 20
-SEEN_IPS_FILE = os.path.join(os.path.dirname(__file__), "seen_ips.json")
+SEEN_IPS_FILE = str(_PACKAGE_DIR / "seen_ips.json")
 RISK_LEVELS = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 # Per-IP request sequences capture order and context (method, URL, status, time).
 # Isolated signals (e.g. one 404 or one login POST) are noisy; ordered sequences
 # support behavioral correlation—recon then exploit, scan bursts, auth-then-admin—
-# which improves detection quality when attack-chain rules are added later.skybyassaultT
+# which improves detection quality when attack-chain rules are added later.
 
-WHITELIST = {
-    "127.0.0.1",
-    "::1",
-    "127.",
-    "10.",
-    "192.168.",
-    "172.16.",
-    "172.17.",
-    "172.18.",
-    "172.19.",
-    "172.20.",
-    "172.21.",
-    "172.22.",
-    "172.23.",
-    "172.24.",
-    "172.25.",
-    "172.26.",
-    "172.27.",
-    "172.28.",
-    "172.29.",
-    "172.30.",
-    "172.31.",
-}
+_whitelist_exact: set[str] = set()
+_whitelist_prefixes: list[str] = []
+_whitelist_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+_slack_webhook: str | None = None
+_discord_webhook: str | None = None
+_email_enabled: bool = True
+
+GEO_CACHE_FILE = str(_PACKAGE_DIR / "geo_cache.json")
+_geo_enabled: bool = True
+_geo_provider: str = "ip-api.com"
+_geo_cache_days: int = 30
+_geo_timeout: float = 2.0
+_geo_cache: dict[str, Any] | None = None
+
+
+@dataclass
+class ToolkitConfig:
+    flood: int = 10
+    burst: int = 10
+    brute_force: int = 3
+    rate_alert: int = 30
+    risk_score_min: int = 15
+    whitelist: list[str] = field(default_factory=list)
+    scan_paths: dict[str, int] = field(default_factory=dict)
+    slack_webhook: str | None = None
+    discord_webhook: str | None = None
+    email_enabled: bool = True
+    geo_enabled: bool = True
+    geo_provider: str = "ip-api.com"
+    geo_cache_days: int = 30
+    geo_timeout_seconds: float = 2.0
+
+
+def _expand_env(value: str) -> str:
+    if not isinstance(value, str):
+        return value
+
+    def repl(match: re.Match) -> str:
+        key = match.group(1)
+        return os.environ.get(key, "")
+
+    return re.sub(r"\$\{([^}]+)\}", repl, value)
+
+
+def _parse_whitelist_entry(entry: str) -> None:
+    entry = entry.strip()
+    if not entry:
+        return
+    if "/" in entry:
+        try:
+            _whitelist_networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            pass
+        return
+    if entry.endswith("."):
+        _whitelist_prefixes.append(entry)
+    else:
+        _whitelist_exact.add(entry)
+
+
+def _apply_whitelist(entries: list[str] | None = None) -> None:
+    global _whitelist_exact, _whitelist_prefixes, _whitelist_networks
+    _whitelist_exact = set()
+    _whitelist_prefixes = []
+    _whitelist_networks = []
+    defaults = [
+        "127.0.0.1",
+        "::1",
+        "127.",
+        "10.",
+        "192.168.",
+        "172.16.",
+        "172.17.",
+        "172.18.",
+        "172.19.",
+        "172.20.",
+        "172.21.",
+        "172.22.",
+        "172.23.",
+        "172.24.",
+        "172.25.",
+        "172.26.",
+        "172.27.",
+        "172.28.",
+        "172.29.",
+        "172.30.",
+        "172.31.",
+    ]
+    for entry in entries if entries is not None else defaults:
+        _parse_whitelist_entry(entry)
+
+
+_apply_whitelist(None)
+
+
+def load_config(config_path: str | Path | None = None) -> ToolkitConfig:
+    """Load YAML config and apply thresholds, whitelist, and scan paths."""
+    global FLOOD_THRESHOLD, BURST_THRESHOLD, BF_THRESHOLD, RATE_ALERT_THRESHOLD
+    global RISK_SCORE_MIN, SCANNER_PATHS, _slack_webhook, _discord_webhook, _email_enabled
+    global _geo_enabled, _geo_provider, _geo_cache_days, _geo_timeout
+
+    cfg = ToolkitConfig()
+    path = Path(config_path) if config_path else None
+    if path is None:
+        for candidate in _DEFAULT_CONFIG_PATHS:
+            if candidate.is_file():
+                path = candidate
+                break
+
+    if path is None or not path.is_file():
+        return cfg
+
+    if yaml is None:
+        print("Warning: PyYAML not installed; ignoring config file. pip install pyyaml", file=sys.stderr)
+        return cfg
+
+    with open(path, encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    thresholds = raw.get("thresholds") or {}
+    cfg.flood = int(thresholds.get("flood", cfg.flood))
+    cfg.burst = int(thresholds.get("burst", cfg.burst))
+    cfg.brute_force = int(thresholds.get("brute_force", cfg.brute_force))
+    cfg.rate_alert = int(thresholds.get("rate_alert", cfg.rate_alert))
+    cfg.risk_score_min = int(thresholds.get("risk_score_min", cfg.risk_score_min))
+
+    cfg.whitelist = list(raw.get("whitelist") or [])
+    scan_list = raw.get("scan_paths")
+    if scan_list:
+        cfg.scan_paths = {p: 2 for p in scan_list}
+
+    integrations = raw.get("integrations") or {}
+    cfg.slack_webhook = _expand_env(integrations.get("slack_webhook") or "") or None
+    cfg.discord_webhook = _expand_env(integrations.get("discord_webhook") or "") or None
+    cfg.email_enabled = bool(integrations.get("email_enabled", True))
+
+    geoip = raw.get("geoip") or {}
+    cfg.geo_enabled = bool(geoip.get("enabled", True))
+    cfg.geo_provider = str(geoip.get("provider", "ip-api.com"))
+    cfg.geo_cache_days = int(geoip.get("cache_days", 30))
+    cfg.geo_timeout_seconds = float(geoip.get("timeout_seconds", 2))
+
+    FLOOD_THRESHOLD = cfg.flood
+    BURST_THRESHOLD = cfg.burst
+    BF_THRESHOLD = cfg.brute_force
+    RATE_ALERT_THRESHOLD = cfg.rate_alert
+    RISK_SCORE_MIN = cfg.risk_score_min
+
+    if cfg.whitelist:
+        _apply_whitelist(cfg.whitelist)
+    if cfg.scan_paths:
+        SCANNER_PATHS.clear()
+        SCANNER_PATHS.update(cfg.scan_paths)
+
+    _slack_webhook = cfg.slack_webhook
+    _discord_webhook = cfg.discord_webhook
+    _email_enabled = cfg.email_enabled
+    _geo_enabled = cfg.geo_enabled
+    _geo_provider = cfg.geo_provider
+    _geo_cache_days = cfg.geo_cache_days
+    _geo_timeout = cfg.geo_timeout_seconds
+    return cfg
+
+
+def configure_geoip(
+    *,
+    enabled: bool | None = None,
+    provider: str | None = None,
+    cache_days: int | None = None,
+    timeout_seconds: float | None = None,
+) -> None:
+    """Apply runtime geo-IP settings (CLI flags override config)."""
+    global _geo_enabled, _geo_provider, _geo_cache_days, _geo_timeout
+    if enabled is not None:
+        _geo_enabled = enabled
+    if provider is not None:
+        _geo_provider = provider
+    if cache_days is not None:
+        _geo_cache_days = cache_days
+    if timeout_seconds is not None:
+        _geo_timeout = timeout_seconds
+
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        return False
+
+
+def _load_geo_cache() -> dict[str, Any]:
+    global _geo_cache
+    if _geo_cache is not None:
+        return _geo_cache
+    if not os.path.isfile(GEO_CACHE_FILE):
+        _geo_cache = {}
+        return _geo_cache
+    try:
+        with open(GEO_CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        _geo_cache = data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        _geo_cache = {}
+    return _geo_cache
+
+
+def _save_geo_cache(cache: dict[str, Any]) -> None:
+    global _geo_cache
+    _geo_cache = cache
+    try:
+        with open(GEO_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+    except OSError:
+        pass
+
+
+def _geo_cache_get(ip: str) -> dict | None:
+    cache = _load_geo_cache()
+    entry = cache.get(ip)
+    if not entry:
+        return None
+    cached_at = entry.get("cached_at")
+    if not cached_at:
+        return None
+    try:
+        stored = datetime.fromisoformat(cached_at)
+    except (ValueError, TypeError):
+        return None
+    if datetime.now() - stored > timedelta(days=_geo_cache_days):
+        return None
+    data = entry.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def _geo_cache_set(ip: str, data: dict | None) -> None:
+    cache = dict(_load_geo_cache())
+    cache[ip] = {"cached_at": datetime.now().isoformat(), "data": data}
+    _save_geo_cache(cache)
+
+
+def _fetch_geoip_ip_api(ip: str) -> dict | None:
+    url = f"http://ip-api.com/json/{ip}"
+    params = {"fields": "status,message,country,countryCode,city,lat,lon"}
+    resp = requests.get(url, params=params, timeout=_geo_timeout)
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("status") != "success":
+        return None
+    return {
+        "country": body.get("country") or "Unknown",
+        "country_code": (body.get("countryCode") or "XX").upper(),
+        "city": body.get("city") or "",
+        "lat": body.get("lat"),
+        "lon": body.get("lon"),
+    }
+
+
+def _fetch_geoip_freegeoip(ip: str) -> dict | None:
+    url = f"https://freegeoip.app/json/{ip}"
+    resp = requests.get(url, timeout=_geo_timeout)
+    resp.raise_for_status()
+    body = resp.json()
+    return {
+        "country": body.get("country_name") or body.get("country") or "Unknown",
+        "country_code": (body.get("country_code") or "XX").upper(),
+        "city": body.get("city") or "",
+        "lat": body.get("latitude") if body.get("latitude") is not None else body.get("lat"),
+        "lon": body.get("longitude") if body.get("longitude") is not None else body.get("lon"),
+    }
+
+
+def get_geoip(ip: str) -> dict | None:
+    """Resolve country/city/coordinates for an IP; uses file cache and handles private IPs."""
+    if not _geo_enabled:
+        return None
+    if _is_private_ip(ip):
+        return {"country": "Private", "country_code": "XX", "city": "", "lat": None, "lon": None}
+
+    cached = _geo_cache_get(ip)
+    if cached is not None:
+        return cached
+
+    provider = (_geo_provider or "ip-api.com").lower()
+    try:
+        if "freegeoip" in provider:
+            data = _fetch_geoip_freegeoip(ip)
+        else:
+            data = _fetch_geoip_ip_api(ip)
+    except (requests.RequestException, ValueError, KeyError):
+        _geo_cache_set(ip, None)
+        return None
+
+    if data:
+        _geo_cache_set(ip, data)
+    return data
+
+
+def country_flag(country_code: str) -> str:
+    code = (country_code or "XX").upper()
+    if len(code) != 2 or not code.isalpha() or code == "XX":
+        return "🏴"
+    return "".join(chr(0x1F1E6 - 0x41 + ord(c)) for c in code)
+
+
+def format_geo_country(geo: dict | None, *, short: bool = False) -> str:
+    if not geo:
+        return "—"
+    code = geo.get("country_code", "XX")
+    name = geo.get("country", "Unknown")
+    flag = country_flag(code)
+    if short and code and code != "XX":
+        return f"{flag} {code}"
+    return f"{flag} {name}"
+
+
+def aggregate_geo_stats(risk_report: list) -> dict[str, int]:
+    """Count flagged IPs per country name."""
+    stats: Counter[str] = Counter()
+    for entry in risk_report:
+        geo = entry.get("geo")
+        country = geo.get("country", "Unknown") if geo else "Unknown"
+        stats[country] += 1
+    return dict(stats)
+
+
+def _country_codes_from_report(risk_report: list) -> dict[str, str]:
+    codes: dict[str, str] = {}
+    for entry in risk_report:
+        geo = entry.get("geo")
+        if not geo:
+            continue
+        country = geo.get("country", "Unknown")
+        codes[country] = geo.get("country_code", "XX")
+    return codes
+
+
+def render_country_chart(
+    geo_stats: dict[str, int],
+    *,
+    country_codes: dict[str, str] | None = None,
+    bar_width: int = 20,
+):
+    """Rich panel: top 5 countries by flagged IP count plus Others."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    country_codes = country_codes or {}
+    total = sum(geo_stats.values())
+    if total <= 0:
+        return Panel("No geo data for flagged IPs", title="🌍 Attack Origins by Country", border_style="cyan")
+
+    sorted_items = sorted(geo_stats.items(), key=lambda x: x[1], reverse=True)
+    top5 = sorted_items[:5]
+    others_count = sum(count for _, count in sorted_items[5:])
+
+    rows = Table.grid(padding=(0, 1))
+    rows.add_column(width=28)
+    rows.add_column()
+    rows.add_column(justify="right", width=12)
+
+    max_count = top5[0][1] if top5 else 1
+
+    for country, count in top5:
+        code = country_codes.get(country, "XX")
+        pct = count / total * 100
+        label = f"{country_flag(code)} {country}"
+        bar = Text(_bar(count, max_count, width=bar_width), style="cyan")
+        rows.add_row(label, bar, f"{count} ({pct:.0f}%)")
+
+    if others_count > 0:
+        pct = others_count / total * 100
+        bar = Text(_bar(others_count, max_count, width=bar_width), style="dim")
+        rows.add_row("Others", bar, f"{others_count} ({pct:.0f}%)")
+
+    return Panel(rows, title="🌍 Attack Origins by Country", border_style="cyan")
+
+
+def _risk_badge(level: str) -> str:
+    return {
+        "CRITICAL": "🔴 CRIT",
+        "HIGH": "🟡 HIGH",
+        "MEDIUM": "🟠 MED",
+        "LOW": "🟢 LOW",
+    }.get(level, level)
 
 
 def is_whitelisted(ip: str) -> bool:
-    if ip in WHITELIST:
+    if ip in _whitelist_exact:
         return True
-    return any(ip.startswith(prefix) for prefix in WHITELIST if prefix.endswith("."))
+    if any(ip.startswith(prefix) for prefix in _whitelist_prefixes):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in _whitelist_networks)
+    except ValueError:
+        return False
 
 SUSPICIOUS_AGENTS = {
     "sqlmap": 4,
@@ -136,7 +528,23 @@ def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
         profile["recent_requests"].pop(0)
 
 
-def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int, flood_count: int, night_count: int = 0, errors_4xx: int = 0, agent_score: int = 0, rate: float = 0.0, sql_hits: int = 0, path_diversity: int = 0, burst_count: int = 0) -> dict:
+def classify_risk(
+    ip: str,
+    ip_count: int,
+    login_attempts: int,
+    scanner_hits: int,
+    flood_count: int,
+    night_count: int = 0,
+    errors_4xx: int = 0,
+    agent_score: int = 0,
+    rate: float = 0.0,
+    sql_hits: int = 0,
+    path_diversity: int = 0,
+    burst_count: int = 0,
+    bf_threshold: int | None = None,
+    include_geo: bool = False,
+) -> dict:
+    bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
     if is_whitelisted(ip):
         return {"ip": ip, "risk_level": "LOW", "score": 0, "reasons": []}
 
@@ -160,7 +568,7 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     if login_attempts >= 10:
         score += 4
         reasons.append(f"Likely brute force: {login_attempts} attempts")
-    elif login_attempts >= 3:
+    elif login_attempts >= bf_threshold:
         score += 2
         reasons.append(f"Multiple login attempts: {login_attempts}")
 
@@ -178,7 +586,7 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
         score += 4
         reasons.append(f"Possible SQL injection: {sql_hits} patterns in URL")
 
-    if login_attempts >= 3 and scanner_hits >= 1:
+    if login_attempts >= bf_threshold and scanner_hits >= 1:
         score += 3
         reasons.append(f"Combined brute force + scanning — likely automated attack")
 
@@ -244,7 +652,12 @@ def classify_risk(ip: str, ip_count: int, login_attempts: int, scanner_hits: int
     else:
         level = "LOW"
 
-    return {"ip": ip, "risk_level": level, "score": normalized, "reasons": reasons}
+    result: dict[str, Any] = {"ip": ip, "risk_level": level, "score": normalized, "reasons": reasons}
+    if include_geo and _geo_enabled:
+        geo = get_geoip(ip)
+        if geo:
+            result["geo"] = geo
+    return result
 
 def build_prompt(entries):
     if not entries:
@@ -305,7 +718,19 @@ def analyze_with_claude(entries):
         return parsed
     return [parsed]
 
-def analyze_file(filepath: str, login_url: str = "/login"):
+def analyze_file(
+    filepath: str,
+    login_url: str = "/login",
+    *,
+    bf_threshold: int | None = None,
+    flood_threshold: int | None = None,
+    burst_threshold: int | None = None,
+    risk_score_min: int | None = None,
+):
+    bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
+    flood_threshold = FLOOD_THRESHOLD if flood_threshold is None else flood_threshold
+    burst_threshold = BURST_THRESHOLD if burst_threshold is None else burst_threshold
+    risk_score_min = RISK_SCORE_MIN if risk_score_min is None else risk_score_min
     ips = Counter()
     login_attempts = Counter()
     scanners = Counter()
@@ -348,7 +773,7 @@ def analyze_file(filepath: str, login_url: str = "/login"):
                         night_requests[ip] += 1
                 except:
                     pass
-                if ips[parsed["ip"]] > FLOOD_THRESHOLD:
+                if ips[parsed["ip"]] > flood_threshold:
                     flood_ips[parsed["ip"]] = ips[parsed["ip"]]
                 for path, path_weight in SCANNER_PATHS.items():
                     if path in parsed["url"]:
@@ -403,15 +828,14 @@ def analyze_file(filepath: str, login_url: str = "/login"):
     burst_ips = Counter()
     for ip, profile in ip_profiles.items():
         timestamps = []
-    for ts in profile.get("timestamps", []):
-        try:
-            dt = datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z")
-            timestamps.append(dt)
-        except:
-            continue
+        for ts in profile.get("timestamps", []):
+            try:
+                dt = datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z")
+                timestamps.append(dt)
+            except:
+                continue
         timestamps.sort()
         window = timedelta(seconds=60)
-        burst_threshold = 10
         for i in range(len(timestamps)):
             window_requests = [t for t in timestamps[i:] if t - timestamps[i] <= window]
             if len(window_requests) >= burst_threshold:
@@ -435,13 +859,22 @@ def analyze_file(filepath: str, login_url: str = "/login"):
             sql_injection.get(ip, 0),
             path_diversity,
             burst_ips.get(ip, 0),
+            bf_threshold=bf_threshold,
+            include_geo=False,
         )
-        if risk["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM"):
+        if risk["score"] >= risk_score_min and risk["score"] > 0:
+            if _geo_enabled:
+                geo = get_geoip(ip)
+                if geo:
+                    risk["geo"] = geo
             risk_report.append(risk)
 
     risk_report.sort(key=lambda x: x["score"], reverse=True)
 
     return {
+        "login_url": login_url,
+        "bf_threshold": bf_threshold,
+        "risk_score_min": risk_score_min,
         "error": None,
         "filepath": filepath,
         "total_requests": total_requests,
@@ -467,7 +900,11 @@ def load_blocklist(filepath):
         for line in f:
             ips.add(line.strip())
     return ips
-blocklist = load_blocklist(os.path.join(os.path.dirname(__file__), "../../samples/blocklist.txt"))
+_blocklist_path = _PACKAGE_DIR.parent.parent / "samples" / "blocklist.txt"
+try:
+    blocklist = load_blocklist(_blocklist_path)
+except FileNotFoundError:
+    blocklist = set()
 
 
 def load_seen_ips(filepath: str = SEEN_IPS_FILE) -> dict[str, str]:
@@ -491,16 +928,78 @@ def save_seen_ips(seen: dict[str, str], filepath: str = SEEN_IPS_FILE) -> None:
         json.dump(dict(sorted(seen.items())), f, indent=2)
 
 
+def _notify_webhooks(entry: dict) -> None:
+    geo = entry.get("geo") or {}
+    country = geo.get("country") or "Unknown"
+    text = (
+        f"[{entry['risk_level']}] {entry['ip']} ({country}) (score: {entry['score']})\n"
+        + "\n".join(f"- {r}" for r in entry.get("reasons", []))
+    )
+    payload = {
+        "text": text,
+        "country": country,
+        "country_code": geo.get("country_code"),
+        "city": geo.get("city"),
+    }
+    if _slack_webhook:
+        try:
+            requests.post(_slack_webhook, json=payload, timeout=5)
+        except requests.RequestException:
+            pass
+    if _discord_webhook:
+        try:
+            requests.post(_discord_webhook, json={"content": text}, timeout=5)
+        except requests.RequestException:
+            pass
+
+
 def alert_ip(entry: dict) -> None:
     colors = {"CRITICAL": "\033[91m", "HIGH": "\033[93m", "MEDIUM": "\033[97m", "LOW": "\033[92m"}
     reset = "\033[0m"
     color = colors.get(entry["risk_level"], reset)
-    print(f"{color}[ALERT] [{entry['risk_level']}] {entry['ip']} (score: {entry['score']}){reset}")
+    geo = entry.get("geo") or {}
+    country = geo.get("country")
+    location = f" ({country})" if country else ""
+    level_icons = {"CRITICAL": "🔴", "HIGH": "🟡", "MEDIUM": "🟠", "LOW": "🟢"}
+    icon = level_icons.get(entry["risk_level"], "")
+    first_reason = entry.get("reasons", [None])[0]
+    reason_suffix = f" - {first_reason}" if first_reason else ""
+    print(
+        f"{color}{icon} [{entry['risk_level']}] {entry['ip']}{location}{reason_suffix} "
+        f"(score: {entry['score']}){reset}"
+    )
     for reason in entry["reasons"]:
         print(f"  → {reason}")
+    _notify_webhooks(entry)
 
 
-def print_report(results, top: int = 10, bf_threshold: int = 3):
+def format_json_report(results: dict, top: int = 10) -> str:
+    risk_report = results.get("risk_report") or []
+    return json.dumps(
+        {
+            "filepath": results.get("filepath"),
+            "total_requests": results.get("total_requests"),
+            "parsed_lines": results.get("parsed_lines"),
+            "errors_4xx": results.get("errors_4xx"),
+            "errors_5xx": results.get("errors_5xx"),
+            "top_ips": results["ips"].most_common(top) if results.get("ips") else [],
+            "risk_report": risk_report,
+            "login_attempts": results.get("login_attempts", {}),
+            "scanners": results.get("scanners", {}),
+            "sql_injection": results.get("sql_injection", {}),
+        },
+        indent=2,
+        default=str,
+    )
+
+
+def print_report(
+    results,
+    top: int = 10,
+    bf_threshold: int = 3,
+    threshold: int | None = None,
+):
+    threshold = RISK_SCORE_MIN if threshold is None else threshold
     if results.get("error"):
         err = results["error"]
         path = results.get("filepath")
@@ -534,7 +1033,7 @@ def print_report(results, top: int = 10, bf_threshold: int = 3):
         for ip, n in scanners.items():
             print(ip, n)
 
-    risk_report = results.get("risk_report", [])
+    risk_report = [e for e in results.get("risk_report", []) if e.get("score", 0) >= threshold]
     if risk_report:
         print("\n=== RISK REPORT ===")
         seen_ips = load_seen_ips()
@@ -640,6 +1139,10 @@ def export_pdf_report(results, output_path="report.pdf"):
 
 
 def send_pdf_report(pdf_path: str, recipient_email: str) -> None:
+    if not _email_enabled:
+        print("Email delivery disabled in config (integrations.email_enabled: false)")
+        return
+
     sender = os.getenv("GMAIL_SENDER")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
 
@@ -671,3 +1174,465 @@ def send_pdf_report(pdf_path: str, recipient_email: str) -> None:
         server.sendmail(sender, recipient_email, msg.as_string())
 
     print(f"PDF report sent to {recipient_email}")
+
+
+def _parse_log_datetime(ts: str) -> datetime | None:
+    try:
+        return datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z")
+    except (ValueError, TypeError):
+        return None
+
+
+def _url_has_sqli(url: str) -> bool:
+    url_lower = url.lower()
+    return any(pattern in url_lower for pattern in SQL_PATTERNS)
+
+
+def _url_hits_scanner(url: str) -> str | None:
+    for path in SCANNER_PATHS:
+        if path in url:
+            return path
+    return None
+
+
+def _monitor_alert(
+    ip: str,
+    reasons: list[str],
+    level: str = "HIGH",
+    score: int = 50,
+    alerted_ips: dict | None = None,
+    alert_keys: set | None = None,
+    dedupe_key: str | None = None,
+) -> dict:
+    if alert_keys is not None and dedupe_key and dedupe_key in alert_keys:
+        return None
+    entry: dict[str, Any] = {"ip": ip, "risk_level": level, "score": score, "reasons": reasons}
+    if _geo_enabled:
+        geo = get_geoip(ip)
+        if geo:
+            entry["geo"] = geo
+    alert_ip(entry)
+    if alert_keys is not None and dedupe_key:
+        alert_keys.add(dedupe_key)
+    if alerted_ips is not None:
+        prev = alerted_ips.get(ip)
+        if prev is None or entry["score"] > prev.get("score", 0):
+            alerted_ips[ip] = entry
+    return entry
+
+
+def monitor_log(
+    log_path: str,
+    login_url: str = "/login",
+    *,
+    rate_threshold: int | None = None,
+    dashboard: bool = False,
+    dashboard_refresh: float = 3.0,
+) -> dict[str, dict]:
+    """
+    Tail a log file and alert on high-rate traffic, SQLi, scanner paths, and login floods.
+    Returns a dict of alerted IPs (summary after Ctrl+C).
+    """
+    rate_threshold = RATE_ALERT_THRESHOLD if rate_threshold is None else rate_threshold
+    window_seconds = 60
+    login_window_seconds = 30
+    login_post_threshold = 5
+
+    # Per-IP: deque of request timestamps (last 60s)
+    ip_windows: dict[str, deque] = defaultdict(lambda: deque())
+    # Per-IP: deque of login POST timestamps (last 30s)
+    login_windows: dict[str, deque] = defaultdict(lambda: deque())
+    alerted_ips: dict[str, dict] = {}
+    alert_keys: set[str] = set()
+    monitor_stats: dict[str, Any] = {
+        "total_requests": 0,
+        "errors_4xx": 0,
+        "risk_report": [],
+        "scanners": Counter(),
+        "sql_injection": Counter(),
+        "login_attempts": Counter(),
+        "ips": Counter(),
+        "filepath": log_path,
+        "monitor_mode": True,
+    }
+
+    def prune_deque(dq: deque, now: datetime, max_age: float) -> None:
+        while dq and (now - dq[0]).total_seconds() > max_age:
+            dq.popleft()
+
+    def process_parsed(parsed: dict, now: datetime | None = None) -> None:
+        if is_whitelisted(parsed["ip"]):
+            return
+        ip = parsed["ip"]
+        monitor_stats["total_requests"] += 1
+        monitor_stats["ips"][ip] += 1
+        if 400 <= parsed["status"] < 500:
+            monitor_stats["errors_4xx"] += 1
+
+        ts = _parse_log_datetime(parsed["datetime"]) or now or datetime.now().astimezone()
+        ip_windows[ip].append(ts)
+        prune_deque(ip_windows[ip], ts, window_seconds)
+
+        req_count = len(ip_windows[ip])
+        if req_count >= rate_threshold:
+            entry = _monitor_alert(
+                ip,
+                [f"Rate exceeded: {req_count} requests in {window_seconds}s (threshold {rate_threshold}/min)"],
+                level="CRITICAL" if req_count >= rate_threshold * 2 else "HIGH",
+                score=min(100, 40 + req_count),
+                alerted_ips=alerted_ips,
+                alert_keys=alert_keys,
+                dedupe_key=f"rate:{ip}",
+            )
+            if entry:
+                monitor_stats["risk_report"].append(entry)
+
+        if _url_has_sqli(parsed["url"]):
+            monitor_stats["sql_injection"][ip] += 1
+            entry = _monitor_alert(
+                ip,
+                [f"SQL injection pattern in URL: {parsed['url'][:120]}"],
+                level="CRITICAL",
+                score=85,
+                alerted_ips=alerted_ips,
+                alert_keys=alert_keys,
+                dedupe_key=f"sqli:{ip}",
+            )
+            if entry:
+                monitor_stats["risk_report"].append(entry)
+
+        scan_path = _url_hits_scanner(parsed["url"])
+        if scan_path:
+            monitor_stats["scanners"][ip] += 1
+            entry = _monitor_alert(
+                ip,
+                [f"Scanner path accessed: {scan_path}"],
+                level="HIGH",
+                score=70,
+                alerted_ips=alerted_ips,
+                alert_keys=alert_keys,
+                dedupe_key=f"scan:{ip}:{scan_path}",
+            )
+            if entry:
+                monitor_stats["risk_report"].append(entry)
+
+        if parsed["method"] == "POST" and parsed["url"] == login_url:
+            login_windows[ip].append(ts)
+            prune_deque(login_windows[ip], ts, login_window_seconds)
+            monitor_stats["login_attempts"][ip] += 1
+            posts = len(login_windows[ip])
+            if posts >= login_post_threshold:
+                entry = _monitor_alert(
+                    ip,
+                    [f"Brute force: {posts} POSTs to {login_url} in {login_window_seconds}s"],
+                    level="CRITICAL",
+                    score=90,
+                    alerted_ips=alerted_ips,
+                    alert_keys=alert_keys,
+                    dedupe_key=f"bf:{ip}",
+                )
+                if entry:
+                    monitor_stats["risk_report"].append(entry)
+
+    def tail_loop(live=None) -> None:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(0, os.SEEK_END)
+            print(f"Monitoring {log_path} (Ctrl+C to stop)...")
+            while True:
+                line = f.readline()
+                if line:
+                    parsed = parse_line(line)
+                    if parsed:
+                        process_parsed(parsed)
+                    if live is not None:
+                        live.update(show_dashboard(monitor_stats, return_renderable=True))
+                else:
+                    if live is not None:
+                        live.update(show_dashboard(monitor_stats, return_renderable=True))
+                    time.sleep(0.25)
+
+    try:
+        if dashboard:
+            from rich.live import Live
+
+            with Live(
+                show_dashboard(monitor_stats, return_renderable=True),
+                refresh_per_second=4,
+                screen=False,
+            ) as live:
+                tail_loop(live=live)
+        else:
+            tail_loop()
+    except KeyboardInterrupt:
+        print("\n--- Monitor stopped ---")
+    except FileNotFoundError:
+        print(f"Error: file not found: {log_path}", file=sys.stderr)
+        return {}
+    except PermissionError:
+        print(f"Error: no permission to read: {log_path}", file=sys.stderr)
+        return {}
+
+    if alerted_ips:
+        print(f"\nSummary: {len(alerted_ips)} IP(s) alerted during this session")
+        for ip, entry in sorted(alerted_ips.items(), key=lambda x: x[1].get("score", 0), reverse=True):
+            print(f"  {entry['risk_level']:8} {ip} (score {entry['score']})")
+    else:
+        print("\nNo alerts during this session.")
+
+    return alerted_ips
+
+
+def _risk_style(level: str) -> str:
+    from rich.style import Style
+
+    return {
+        "CRITICAL": Style(color="red", bold=True),
+        "HIGH": Style(color="yellow", bold=True),
+        "MEDIUM": Style(color="white"),
+        "LOW": Style(color="green"),
+    }.get(level, Style())
+
+
+def _bar(value: int, maximum: int, width: int = 24) -> str:
+    if maximum <= 0:
+        return "░" * width
+    filled = min(width, int(width * value / maximum))
+    return "█" * filled + "░" * (width - filled)
+
+
+def show_dashboard(results: dict, return_renderable: bool = False):
+    """Rich terminal dashboard for analysis or live monitor results."""
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    total_requests = results.get("total_requests", 0)
+    errors_4xx = results.get("errors_4xx", 0)
+    risk_report = results.get("risk_report") or []
+    flagged = len(risk_report)
+    error_rate = (errors_4xx / total_requests * 100) if total_requests else 0.0
+
+    gauges = Table.grid(padding=(0, 2))
+    gauges.add_row(
+        "Total requests",
+        Text(_bar(total_requests, max(total_requests, 1)), style="cyan"),
+        str(total_requests),
+    )
+    gauges.add_row(
+        "Error rate (4xx)",
+        Text(_bar(int(error_rate), 100), style="red" if error_rate > 10 else "yellow"),
+        f"{error_rate:.1f}%",
+    )
+    gauges.add_row(
+        "Flagged IPs",
+        Text(_bar(flagged, max(flagged, 10) or 10), style="magenta"),
+        str(flagged),
+    )
+
+    ip_table = Table(title="Top Attacking IPs", expand=True)
+    ip_table.add_column("IP", style="bold")
+    ip_table.add_column("Risk")
+    ip_table.add_column("Score", justify="right")
+    ip_table.add_column("Reasons", overflow="fold")
+    ip_table.add_column("Country")
+
+    entries = sorted(risk_report, key=lambda e: e.get("score", 0), reverse=True)[:10]
+    if not entries and results.get("ips"):
+        for ip, count in results["ips"].most_common(10):
+            geo = get_geoip(ip) if _geo_enabled else None
+            ip_table.add_row(
+                ip,
+                "—",
+                "—",
+                f"{count} requests",
+                format_geo_country(geo, short=True),
+            )
+    else:
+        for entry in entries:
+            level = entry.get("risk_level", "LOW")
+            reasons = "; ".join(entry.get("reasons", [])[:2]) or "—"
+            ip_table.add_row(
+                entry["ip"],
+                _risk_badge(level),
+                str(entry.get("score", 0)),
+                reasons,
+                format_geo_country(entry.get("geo"), short=True),
+            )
+
+    geo_stats = aggregate_geo_stats(risk_report)
+    country_codes = _country_codes_from_report(risk_report)
+    country_panel = render_country_chart(geo_stats, country_codes=country_codes)
+
+    sqli_count = sum(results.get("sql_injection", {}).values()) or len(results.get("sql_injection", {}))
+    scan_count = sum(results.get("scanners", {}).values()) or len(results.get("scanners", {}))
+    bf_count = sum(
+        1
+        for _ip, n in (results.get("login_attempts") or {}).items()
+        if n >= BF_THRESHOLD
+    )
+    attack_max = max(sqli_count, scan_count, bf_count, 1)
+
+    attack_table = Table(title="Attack Types", expand=True)
+    attack_table.add_column("Type")
+    attack_table.add_column("Volume", justify="right")
+    attack_table.add_column("Bar")
+    for label, count, style in (
+        ("SQLi", sqli_count, "red"),
+        ("Scanners", scan_count, "yellow"),
+        ("Brute force", bf_count, "magenta"),
+    ):
+        attack_table.add_row(label, str(count), Text(_bar(count, attack_max), style=style))
+
+    title = "LogSec Monitor" if results.get("monitor_mode") else "LogSec Dashboard"
+    panels = [Panel(gauges, title=title, border_style="blue")]
+    if geo_stats:
+        panels.append(country_panel)
+    panels.extend([ip_table, attack_table])
+    renderable = Group(*panels)
+
+    if return_renderable:
+        return renderable
+
+    from rich.console import Console
+
+    Console().print(renderable)
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    examples = """
+Examples:
+  %(prog)s samples/access.log
+  %(prog)s /var/log/apache2/access.log --threshold 25 --top 20
+  %(prog)s access.log --json --no-ai
+  %(prog)s access.log --pdf --email analyst@example.com
+  %(prog)s access.log --monitor
+  %(prog)s access.log --monitor --dashboard
+  %(prog)s access.log --config config.yaml
+"""
+    parser = argparse.ArgumentParser(
+        description="LogSec Apache access log security analyzer",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=examples,
+    )
+    parser.add_argument("log_file", help="Path to Apache/Nginx access log")
+    parser.add_argument("--config", metavar="PATH", help="YAML config file (default: ./config.yaml)")
+    parser.add_argument("--pdf", action="store_true", help="Generate PDF security report")
+    parser.add_argument(
+        "--email",
+        metavar="ADDRESS",
+        help="Email PDF report to ADDRESS (requires --pdf)",
+    )
+    parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument(
+        "--threshold",
+        type=int,
+        default=None,
+        metavar="SCORE",
+        help=f"Minimum risk score to show (default: {RISK_SCORE_MIN})",
+    )
+    parser.add_argument("--top", type=int, default=10, metavar="N", help="Top N IPs to show (default: 10)")
+    parser.add_argument(
+        "--bf-threshold",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Brute-force login threshold (default: {BF_THRESHOLD})",
+    )
+    parser.add_argument("--login-url", default="/login", help="Login URL path for brute-force detection")
+    parser.add_argument("--no-ai", action="store_true", help="Skip Claude AI analysis")
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Real-time tail mode: alert on rate/SQLi/scanner/login floods",
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Rich terminal dashboard (use with --monitor for live refresh)",
+    )
+    parser.add_argument(
+        "--geo-disable",
+        action="store_true",
+        help="Skip geo-IP lookups (faster, no external API)",
+    )
+    parser.add_argument(
+        "--geo-timeout",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="Timeout in seconds for geo lookups (default: 2)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_cli_parser()
+    args = parser.parse_args(argv)
+
+    load_config(args.config)
+    configure_geoip(
+        enabled=False if args.geo_disable else None,
+        timeout_seconds=args.geo_timeout,
+    )
+
+    threshold = RISK_SCORE_MIN if args.threshold is None else args.threshold
+    bf_threshold = BF_THRESHOLD if args.bf_threshold is None else args.bf_threshold
+
+    log_path = args.log_file
+    if not os.path.isfile(log_path):
+        print(f"Error: log file not found: {log_path}", file=sys.stderr)
+        return 1
+
+    if args.email and not args.pdf:
+        parser.error("--email requires --pdf")
+
+    if args.monitor:
+        monitor_log(
+            log_path,
+            login_url=args.login_url,
+            dashboard=args.dashboard,
+        )
+        return 0
+
+    results = analyze_file(
+        log_path,
+        login_url=args.login_url,
+        bf_threshold=bf_threshold,
+        risk_score_min=threshold,
+    )
+
+    if results.get("error"):
+        print_report(results)
+        return 1
+
+    if args.dashboard:
+        show_dashboard(results)
+    elif args.json:
+        print(format_json_report(results, top=args.top))
+    else:
+        print_report(results, top=args.top, bf_threshold=bf_threshold, threshold=threshold)
+
+    pdf_path = "report.pdf"
+    if args.pdf:
+        export_pdf_report(results, pdf_path)
+    if args.email:
+        send_pdf_report(pdf_path, args.email)
+
+    risk_report = [e for e in results.get("risk_report", []) if e.get("score", 0) >= threshold]
+    if risk_report and not args.no_ai and not args.json:
+        print("\n--- STARTING AI SECURITY ANALYSIS ---")
+        try:
+            print(">> Requesting analysis from Claude...")
+            ai_results = analyze_with_claude(risk_report)
+            print(">> Success!\n")
+            print("=== AI SECURITY REPORT ===")
+            print(json.dumps(ai_results, indent=2))
+        except Exception as e:
+            print(f">> AI analysis failed: {e}", file=sys.stderr)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
