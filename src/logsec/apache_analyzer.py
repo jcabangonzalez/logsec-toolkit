@@ -15,7 +15,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
-
+from logsec.mitre_mapper import MITREMapper
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from google import genai
@@ -749,7 +749,7 @@ def analyze_file(
     redirects = 0
     total_requests = 0
     parsed_lines = 0
-
+    mitre_mapper = MITREMapper()
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as file:
             for line in file:
@@ -761,6 +761,17 @@ def analyze_file(
                 if is_whitelisted(parsed["ip"]):
                     continue
                 _record_ip_request(ip_profiles, parsed)
+                mitre_matches = mitre_mapper.map_request(
+                    request=parsed["url"],
+                    status_code=parsed["status"],
+                    user_agent=parsed.get("user_agent") or "",
+                    ip=parsed["ip"],
+                    timestamp=_parse_log_datetime(parsed["datetime"]) or datetime.now().astimezone(),
+                    failure_count=login_attempts.get(parsed["ip"], 0),
+                    response_size=parsed.get("size") or 0,
+                )
+                if mitre_matches:
+                    ip_profiles[parsed["ip"]]["mitre"] = ip_profiles[parsed["ip"]].get("mitre", []) + mitre_matches
                 ips[parsed["ip"]] += 1
                 try:
                     dt = datetime.strptime(parsed["datetime"], "%d/%b/%Y:%H:%M:%S %z")

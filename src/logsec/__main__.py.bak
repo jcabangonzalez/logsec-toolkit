@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+def apache_subcommand(args):
+    from logsec.apache_analyzer import classify_risk
+    with open(args.logfile) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 12:
+                continue
+            ip = parts[0]
+            timestamp = parts[3].lstrip('[')
+            method = parts[5].strip('"')
+            path = parts[6]
+            request = f"{method} {path}"
+            status = int(parts[8])
+            ua = ' '.join(parts[11:]).strip('"')
+            result = classify_risk(request, status, ua, ip, timestamp, 0, args)
+            if args.mitre or args.ollama:
+                print(result)
+
+def juice_subcommand(args):
+    print("Juice analyzer not implemented yet")
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest='command')
+    
+    apache_parser = subparsers.add_parser('apache', help='Analyze Apache logs')
+    apache_parser.add_argument('logfile')
+    apache_parser.add_argument('--mitre', action='store_true', help='MITRE mapping')
+    apache_parser.add_argument('--ollama', action='store_true', help='Ollama AI triage')
+    apache_parser.set_defaults(func=apache_subcommand)
+    
+    juice_parser = subparsers.add_parser('juice', help='Analyze Juice logs')
+    juice_parser.add_argument('logfile')
+    juice_parser.set_defaults(func=juice_subcommand)
+    
+    args = parser.parse_args()
+    if hasattr(args, 'func'):
+        args.func(args)
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
