@@ -47,6 +47,7 @@ Designed for defensive security practice and log-based threat detection in lab e
 ### Automation
 
 - **Cron job scheduling** — Run periodic scans against live or rotated logs (see [Scheduled runs](#scheduled-runs-cron) below).
+- **Automated agent** — `logsec_agent.py` runs the full pipeline unattended: analyze → AI triage → PDF → email, triggered only when CRITICAL or HIGH threats are found (see [Automated agent](#automated-agent) below).
 
 ## Installation
 
@@ -174,6 +175,55 @@ Example: hourly scan with JSON output (no email):
 ```
 
 Ensure the cron user has read access to log files, valid `.env` API keys, and (if using `--auto-block`) passwordless `sudo` for `iptables` — only in controlled lab environments.
+
+### Automated agent
+
+`logsec_agent.py` runs the full detection-to-delivery pipeline without any flags. It is designed to be invoked directly or from a cron job.
+
+**Pipeline:**
+
+1. Parses `samples/access.log` with the same rule engine as the CLI
+2. Checks whether any flagged IP scored **CRITICAL** or **HIGH**
+3. If no such threats exist, exits cleanly with no side effects
+4. If threats are found: sends the risk report to Claude for per-IP triage, exports a PDF, and emails it to the configured recipient
+
+**Outputs:**
+
+| Output | Path |
+|--------|------|
+| Structured log | `logsec_agent.log` (project root) |
+| PDF report | `logsec_agent_report.pdf` (project root) |
+| Email recipient | `jobhunteredrick@gmail.com` |
+
+**Run:**
+
+```bash
+python3 logsec_agent.py
+```
+
+**Sample output (threats detected):**
+
+```
+2026-06-05 09:43:18 [INFO] LogSec agent starting
+2026-06-05 09:43:18 [INFO] Target log: .../samples/access.log
+2026-06-05 09:43:18 [INFO] Analysis complete: 37 total requests, 2 flagged IP(s)
+2026-06-05 09:43:18 [INFO] Threat levels requiring action — CRITICAL: 1, HIGH: 1
+2026-06-05 09:43:18 [INFO] Requesting AI triage for 2 IP(s)
+2026-06-05 09:43:21 [INFO] AI triage complete: 2 IP(s) assessed
+2026-06-05 09:43:21 [INFO]   [CRITICAL] 1.2.3.4 — Immediately block IP at firewall and WAF.
+2026-06-05 09:43:21 [INFO]   [HIGH] 5.5.5.5 — Implement rate limiting and monitor for escalation.
+2026-06-05 09:43:21 [INFO] PDF export successful
+2026-06-05 09:43:22 [INFO] Email delivered to jobhunteredrick@gmail.com
+2026-06-05 09:43:22 [INFO] LogSec agent completed successfully
+```
+
+**Cron example** — run every night at 02:00:
+
+```cron
+0 2 * * * cd /path/to/logsec-toolkit && python3 logsec_agent.py >> /var/log/logsec_agent.log 2>&1
+```
+
+Requires `ANTHROPIC_API_KEY`, `GMAIL_SENDER`, and `GMAIL_APP_PASSWORD` in `.env`.
 
 ### Example JSON output
 
