@@ -18,3 +18,5 @@ Thumbs.db
 # Reports
 reports/*.json
 src/.env
+src/logsec/geo_cache.json
+src/logsec/seen_ips.json
