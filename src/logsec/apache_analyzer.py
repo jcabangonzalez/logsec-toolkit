@@ -16,6 +16,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 from logsec.mitre_mapper import MITREMapper
+from logsec.ollama_ai import OllamaTriage
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from google import genai
@@ -726,6 +727,7 @@ def analyze_file(
     flood_threshold: int | None = None,
     burst_threshold: int | None = None,
     risk_score_min: int | None = None,
+    ollama: bool = False,
 ):
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
     flood_threshold = FLOOD_THRESHOLD if flood_threshold is None else flood_threshold
@@ -881,6 +883,19 @@ def analyze_file(
             risk_report.append(risk)
 
     risk_report.sort(key=lambda x: x["score"], reverse=True)
+
+    if ollama:
+        triage_engine = OllamaTriage()
+        for entry in risk_report:
+            ip = entry["ip"]
+            mitre_hits = ip_profiles.get(ip, {}).get("mitre", [])
+            technique_ids = list({m["technique_id"] for m in mitre_hits})
+            log_summary = f"IP {ip}: score={entry['score']}, reasons={entry['reasons']}"
+            raw = triage_engine.analyze(log_summary, technique_ids)
+            try:
+                entry["ollama_triage"] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                entry["ollama_triage"] = {"raw": raw}
 
     return {
         "login_url": login_url,

@@ -84,6 +84,7 @@ def main():
             login_url=args.login_url,
             bf_threshold=args.bf_threshold,
             risk_score_min=threshold,
+            ollama=args.ollama,
         )
 
         if results.get("error"):
@@ -115,6 +116,20 @@ def main():
             layer_path = "mitre_navigator_layer.json"
             results["mitre_mapper"].export_navigator_layer(layer_path)
             print(f"\n[+] MITRE ATT&CK Navigator layer saved to {layer_path}")
+
+        if args.ollama:
+            print("\n=== OLLAMA AI TRIAGE ===")
+            for entry in results.get("risk_report", []):
+                triage = entry.get("ollama_triage")
+                if not triage:
+                    continue
+                print(f"\n{entry['ip']}:")
+                if isinstance(triage, dict) and "error" not in triage and "raw" not in triage:
+                    print(f"  Risk:    {triage.get('risk', '—')}")
+                    print(f"  Action:  {triage.get('action', '—')}")
+                    print(f"  Summary: {triage.get('summary', '—')}")
+                else:
+                    print(f"  {triage.get('raw') or triage.get('error') or triage}")
 
         pdf_path = "report.pdf"
         if args.pdf:
