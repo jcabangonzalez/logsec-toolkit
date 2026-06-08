@@ -100,6 +100,15 @@ def main():
                 bf_threshold=args.bf_threshold,
                 threshold=threshold,
             )
+        if args.mitre:
+            print("\n=== MITRE ATT&CK TECHNIQUES ===")
+            for ip, profile in results.get("ip_profiles", {}).items():
+                mitre = profile.get("mitre", [])
+                if mitre:
+                    unique = list({m["technique_id"]: m for m in mitre}.values())
+                    print(f"\n{ip}:")
+                    for t in unique:
+                        print(f"  [{t['technique_id']}] {t['technique_name']} ({t['tactic_name']})")
 
         pdf_path = "report.pdf"
         if args.pdf:
