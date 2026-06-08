@@ -47,6 +47,8 @@ def build_parser():
         metavar="SECS",
         help="Timeout in seconds for geo lookups (default: 2)",
     )
+    ap.add_argument('--mitre', action='store_true', help='Show MITRE ATT&CK techniques')
+    ap.add_argument('--ollama', action='store_true', help='Use Ollama AI triage')
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
