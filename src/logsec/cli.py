@@ -84,6 +84,7 @@ def main():
             login_url=args.login_url,
             bf_threshold=args.bf_threshold,
             risk_score_min=threshold,
+            mitre=args.mitre,
             ollama=args.ollama,
         )
 

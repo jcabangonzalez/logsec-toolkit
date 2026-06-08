@@ -513,6 +513,7 @@ def _record_ip_request(ip_profiles: dict, parsed: dict) -> None:
     ip = parsed["ip"]
     if ip not in ip_profiles:
         ip_profiles[ip] = {"requests": 0, "recent_requests": [], "unique_paths": set(), "timestamps": []}
+        ip_profiles[ip]["sample_request"] = parsed["url"]
     profile = ip_profiles[ip]
     profile["requests"] += 1
     profile["unique_paths"].add(parsed["url"])
@@ -727,6 +728,7 @@ def analyze_file(
     flood_threshold: int | None = None,
     burst_threshold: int | None = None,
     risk_score_min: int | None = None,
+    mitre: bool = False,
     ollama: bool = False,
 ):
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
@@ -888,9 +890,11 @@ def analyze_file(
         triage_engine = OllamaTriage()
         for entry in risk_report:
             ip = entry["ip"]
-            mitre_hits = ip_profiles.get(ip, {}).get("mitre", [])
+            profile = ip_profiles.get(ip, {})
+            mitre_hits = profile.get("mitre", [])
             technique_ids = list({m["technique_id"] for m in mitre_hits})
-            log_summary = f"IP {ip}: score={entry['score']}, reasons={entry['reasons']}"
+            sample = profile.get("sample_request", "")
+            log_summary = f"IP {ip}: score={entry['score']}, sample_url={sample}, reasons={entry['reasons']}"
             raw = triage_engine.analyze(log_summary, technique_ids)
             try:
                 entry["ollama_triage"] = json.loads(raw)
