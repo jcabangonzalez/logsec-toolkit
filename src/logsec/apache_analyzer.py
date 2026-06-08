@@ -903,6 +903,7 @@ def analyze_file(
         "errors_5xx_per_ip": dict(errors_5xx_per_ip),
         "ip_profiles": ip_profiles,
         "risk_report": risk_report,
+        "mitre_mapper": mitre_mapper,
     }
 
 def load_blocklist(filepath):

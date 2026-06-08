@@ -48,6 +48,7 @@ def build_parser():
         help="Timeout in seconds for geo lookups (default: 2)",
     )
     ap.add_argument('--mitre', action='store_true', help='Show MITRE ATT&CK techniques')
+    ap.add_argument('--mitre-export', action='store_true', help='Export MITRE ATT&CK Navigator layer to JSON')
     ap.add_argument('--ollama', action='store_true', help='Use Ollama AI triage')
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
@@ -109,6 +110,11 @@ def main():
                     print(f"\n{ip}:")
                     for t in unique:
                         print(f"  [{t['technique_id']}] {t['technique_name']} ({t['tactic_name']})")
+
+        if args.mitre_export:
+            layer_path = "mitre_navigator_layer.json"
+            results["mitre_mapper"].export_navigator_layer(layer_path)
+            print(f"\n[+] MITRE ATT&CK Navigator layer saved to {layer_path}")
 
         pdf_path = "report.pdf"
         if args.pdf:
