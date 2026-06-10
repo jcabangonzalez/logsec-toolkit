@@ -21,7 +21,7 @@ reports/*.json
 outputs/*.jsonl
 report.pdf
 outputs/report.pdf
-src/.env
+.env
 seen_ips.json
 geo_cache.json
 .aider*
