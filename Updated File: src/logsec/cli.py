@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import sys
 
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
@@ -97,6 +96,7 @@ def build_parser():
     js.add_argument("--top", type=int, default=10, help="Top N (default: 10)")
 
     return p
+
 
 def main():
     args = build_parser().parse_args()
@@ -207,5 +207,6 @@ def main():
         print_juice_report(results, top=args.top)
         return
 
+
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
