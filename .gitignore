@@ -22,6 +22,6 @@ outputs/*.jsonl
 report.pdf
 outputs/report.pdf
 src/.env
-src/logsec/geo_cache.json
-src/logsec/seen_ips.json
+seen_ips.json
+geo_cache.json
 .aider*
