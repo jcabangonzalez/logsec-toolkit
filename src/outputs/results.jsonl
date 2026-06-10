@@ -1,2 +1,0 @@
-{"ip": "5.5.5.5", "timestamp": "08/May/2026:14:23:01 +0000", "method": "GET", "path": "/login?id=1'", "status_code": 200, "risk_score": 80, "risk_level": "CRITICAL", "mitre_tactic": "Persistence"}
-{"ip": "1.2.3.4", "timestamp": "06/May/2026:03:11:04 +0000", "method": "POST", "path": "/login", "status_code": 401, "risk_score": 73, "risk_level": "CRITICAL", "mitre_tactic": "Persistence"}
