@@ -166,14 +166,17 @@ def main(argv: list[str] | None = None) -> int:
                 if entry["risk_level"] == "CRITICAL":
                     ip = entry["ip"]
                     os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
-                    print(f"[BLOCKED] {ip}")
-        return
+                    print(f"\n[+] Auto-blocked IP: {ip}")
+        return 0
 
-    if args.command == "juice":
-        results = analyze_juice_logs(args.logfile)
-        print_juice_report(results, top=args.top)
-        return
+    elif args.command == "juice":
+        # Add code for the juice command here
+        pass
+
+    else:
+        parser.print_help()
+        return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
