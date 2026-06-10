@@ -65,7 +65,7 @@ def build_parser():
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args()
 
     if args.command == "apache":
         load_config(getattr(args, "config", None))
