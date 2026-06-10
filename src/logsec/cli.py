@@ -50,6 +50,7 @@ def build_parser():
     ap.add_argument('--mitre', action='store_true', help='Show MITRE ATT&CK techniques')
     ap.add_argument('--mitre-export', action='store_true', help='Export MITRE ATT&CK Navigator layer to JSON')
     ap.add_argument('--ollama', action='store_true', help='Use Ollama AI triage')
+    ap.add_argument('--include-internal', action='store_true', help='Include RFC1918/loopback IPs (skipped by default)')
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
@@ -86,6 +87,7 @@ def main():
             risk_score_min=threshold,
             mitre=args.mitre,
             ollama=args.ollama,
+            include_internal=args.include_internal,
         )
 
         if results.get("error"):

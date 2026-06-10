@@ -545,9 +545,10 @@ def classify_risk(
     burst_count: int = 0,
     bf_threshold: int | None = None,
     include_geo: bool = False,
+    include_internal: bool = False,
 ) -> dict:
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
-    if is_whitelisted(ip):
+    if not include_internal and is_whitelisted(ip):
         return {"ip": ip, "risk_level": "LOW", "score": 0, "reasons": []}
 
     score = 0
@@ -730,11 +731,13 @@ def analyze_file(
     risk_score_min: int | None = None,
     mitre: bool = False,
     ollama: bool = False,
+    include_internal: bool = False,
 ):
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
     flood_threshold = FLOOD_THRESHOLD if flood_threshold is None else flood_threshold
     burst_threshold = BURST_THRESHOLD if burst_threshold is None else burst_threshold
     risk_score_min = RISK_SCORE_MIN if risk_score_min is None else risk_score_min
+    _wl_check = (lambda _ip: False) if include_internal else is_whitelisted
     ips = Counter()
     login_attempts = Counter()
     scanners = Counter()
@@ -762,7 +765,7 @@ def analyze_file(
                     continue
                 parsed_lines += 1
                 total_requests += 1
-                if is_whitelisted(parsed["ip"]):
+                if _wl_check(parsed["ip"]):
                     continue
                 _record_ip_request(ip_profiles, parsed)
                 mitre_matches = mitre_mapper.map_request(
@@ -876,6 +879,7 @@ def analyze_file(
             burst_ips.get(ip, 0),
             bf_threshold=bf_threshold,
             include_geo=False,
+            include_internal=include_internal,
         )
         if risk["score"] >= risk_score_min and risk["score"] > 0:
             if _geo_enabled:
