@@ -12,11 +12,13 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs (runtime logs ignored; sample logs in samples/ are tracked)
 *.log
+!samples/*.log
 
 # Reports
 reports/*.json
 src/.env
 src/logsec/geo_cache.json
 src/logsec/seen_ips.json
+.aider*

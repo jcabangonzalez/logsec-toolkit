@@ -39,7 +39,7 @@ _DEFAULT_CONFIG_PATHS = (
 
 log_pattern = re.compile(
     r'(?P<ip>\S+) \S+ \S+ \[(?P<datetime>[^\]]+)\] '
-    r'"(?P<method>\S+) (?P<url>\S+) (?P<protocol>[^"]+)" '
+    r'"(?P<method>\S+) (?P<url>.+?) (?P<protocol>HTTP/[^ "]+)" '
     r'(?P<status>\d+) (?P<size>\d+|-)'
     r'(?: "(?P<referer>[^"]*)" "(?P<user_agent>[^"]*)")?'
 )
@@ -480,22 +480,47 @@ SCANNER_PATHS = {
 }
 
 SQL_PATTERNS = {
+    # UNION-based extraction
     "union select": 3,
     "union%20select": 3,
+    "union+select": 3,
+    "from users": 3,
+    "from+users": 3,
+    "from information_schema": 3,
+    # Boolean conditions
     "or 1=1": 3,
     "or%201=1": 3,
+    "or+1=1": 3,
+    "and 1=1": 2,
+    "and+1=1": 2,
+    "and 1=2": 2,
+    "and+1=2": 2,
     "' or '": 2,
     "%27%20or%20": 2,
+    "%27+or+": 2,
+    # Column enumeration
+    "order by": 2,
+    "order+by": 2,
+    "order%20by": 2,
+    # Stacked / termination
     "drop table": 3,
-    "information_schema": 2,
-    "sleep(": 2,
-    "benchmark(": 2,
     ";--": 2,
     "';--": 2,
+    # Time-based blind
+    "sleep(": 2,
+    "benchmark(": 2,
+    "waitfor delay": 2,
+    "randomblob(": 2,
+    "pg_sleep(": 2,
+    # Fingerprinting
+    "@@version": 2,
+    "sqlite_version": 2,
+    "information_schema": 2,
+    # String manipulation (lower weight — broad)
     "concat(": 1,
     "char(": 1,
-    "@@version": 2,
-    "waitfor delay": 2,
+    "select null": 1,
+    "select+null": 1,
 }
 
 def parse_line(line: str):
