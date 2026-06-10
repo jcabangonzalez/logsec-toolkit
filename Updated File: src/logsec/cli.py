@@ -1,7 +1,8 @@
 import argparse
 import json
 import os
-import traceback
+import sys
+
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
     analyze_with_claude,
@@ -101,116 +102,110 @@ def main():
     args = build_parser().parse_args()
 
     if args.command == "apache":
-        try:
-            load_config(getattr(args, "config", None))
-            configure_geoip(
-                enabled=False if args.geo_disable else None,
-                timeout_seconds=args.geo_timeout,
-            )
-            if args.email and not args.pdf:
-                build_parser().error("apache: --email requires --pdf")
+        load_config(getattr(args, "config", None))
+        configure_geoip(
+            enabled=False if args.geo_disable else None,
+            timeout_seconds=args.geo_timeout,
+        )
+        if args.email and not args.pdf:
+            build_parser().error("apache: --email requires --pdf")
 
-            if args.monitor:
-                monitor_log(
-                    args.logfile,
-                    login_url=args.login_url,
-                    dashboard=args.dashboard,
-                )
-                return
-
-            threshold = args.threshold
-            results = analyze_apache_file(
+        if args.monitor:
+            monitor_log(
                 args.logfile,
                 login_url=args.login_url,
+                dashboard=args.dashboard,
+            )
+            return
+
+        threshold = args.threshold
+        results = analyze_apache_file(
+            args.logfile,
+            login_url=args.login_url,
+            bf_threshold=args.bf_threshold,
+            risk_score_min=threshold,
+            mitre=args.mitre,
+            include_internal=args.include_internal,
+        )
+
+        if results.get("error"):
+            print_apache_report(results)
+            return
+
+        if args.dashboard:
+            show_dashboard(results)
+        elif args.json:
+            print(format_json_report(results, top=args.top))
+        else:
+            print_apache_report(
+                results,
+                top=args.top,
                 bf_threshold=args.bf_threshold,
-                risk_score_min=threshold,
-                mitre=args.mitre,
-                include_internal=args.include_internal,
+                threshold=threshold,
             )
 
-            if results.get("error"):
-                print_apache_report(results)
-                return
+        if args.mitre:
+            print("\n=== MITRE ATT&CK TECHNIQUES ===")
+            for ip, profile in results.get("ip_profiles", {}).items():
+                mitre = profile.get("mitre", [])
+                if mitre:
+                    unique = list({m["technique_id"]: m for m in mitre}.values())
+                    print(f"\n{ip}:")
+                    for t in unique:
+                        print(f"  [{t['technique_id']}] {t['technique_name']} ({t['tactic_name']})")
 
-            if args.dashboard:
-                show_dashboard(results)
-            elif args.json:
-                print(format_json_report(results, top=args.top))
+        if args.mitre_export:
+            layer_path = "mitre_navigator_layer.json"
+            results["mitre_mapper"].export_navigator_layer(layer_path)
+            print(f"\n[+] MITRE ATT&CK Navigator layer saved to {layer_path}")
+
+        pdf_path = "report.pdf"
+        if args.pdf:
+            export_pdf_report(results, pdf_path)
+        if args.email:
+            send_pdf_report(pdf_path, args.email)
+
+        if args.output and results.get("risk_report"):
+            with open(args.output, "w") as f:
+                json.dump(results["risk_report"], f, indent=2)
+            print(f"\n[+] Risk report saved to {args.output}")
+
+        risk_report = results.get("risk_report") or []
+
+        if risk_report and not args.no_ai and not args.json:
+            if args.ollama:
+                print("\n--- STARTING OLLAMA AI TRIAGE ---")
+                try:
+                    print(f">> Requesting analysis from {args.ollama_model}...")
+                    ai_results = analyze_with_ollama(risk_report, model=args.ollama_model)
+                    print(">> Success!\n")
+                    print("=== OLLAMA AI TRIAGE ===")
+                    print(json.dumps(ai_results, indent=2))
+                except Exception as e:
+                    print(f">> Ollama triage failed: {e}")
             else:
-                print_apache_report(
-                    results,
-                    top=args.top,
-                    bf_threshold=args.bf_threshold,
-                    threshold=threshold,
-                )
+                print("\n--- STARTING AI SECURITY ANALYSIS ---")
+                try:
+                    print(">> Requesting analysis from Claude...")
+                    ai_results = analyze_with_claude(risk_report)
+                    print(">> Success!\n")
+                    print("=== AI SECURITY REPORT ===")
+                    print(json.dumps(ai_results, indent=2))
+                except Exception as e:
+                    print(f">> AI analysis failed: {e}")
 
-            if args.mitre:
-                print("\n=== MITRE ATT&CK TECHNIQUES ===")
-                for ip, profile in results.get("ip_profiles", {}).items():
-                    mitre = profile.get("mitre", [])
-                    if mitre:
-                        unique = list({m["technique_id"]: m for m in mitre}.values())
-                        print(f"\n{ip}:")
-                        for t in unique:
-                            print(f"  [{t['technique_id']}] {t['technique_name']} ({t['tactic_name']})")
-
-            if args.mitre_export:
-                layer_path = "mitre_navigator_layer.json"
-                results["mitre_mapper"].export_navigator_layer(layer_path)
-                print(f"\n[+] MITRE ATT&CK Navigator layer saved to {layer_path}")
-
-            pdf_path = "report.pdf"
-            if args.pdf:
-                export_pdf_report(results, pdf_path)
-            if args.email:
-                send_pdf_report(pdf_path, args.email)
-
-            if args.output and results.get("risk_report"):
-                with open(args.output, "w") as f:
-                    json.dump(results["risk_report"], f, indent=2)
-                print(f"\n[+] Risk report saved to {args.output}")
-
-            risk_report = results.get("risk_report") or []
-
-            if risk_report and not args.no_ai and not args.json:
-                if args.ollama:
-                    print("\n--- STARTING OLLAMA AI TRIAGE ---")
-                    try:
-                        print(f">> Requesting analysis from {args.ollama_model}...")
-                        ai_results = analyze_with_ollama(risk_report, model=args.ollama_model)
-                        print(">> Success!\n")
-                        print("=== OLLAMA AI TRIAGE ===")
-                        print(json.dumps(ai_results, indent=2))
-                    except Exception as e:
-                        print(f">> Ollama triage failed: {e}")
-                else:
-                    print("\n--- STARTING AI SECURITY ANALYSIS ---")
-                    try:
-                        print(">> Requesting analysis from Claude...")
-                        ai_results = analyze_with_claude(risk_report)
-                        print(">> Success!\n")
-                        print("=== AI SECURITY REPORT ===")
-                        print(json.dumps(ai_results, indent=2))
-                    except Exception as e:
-                        print(f">> AI analysis failed: {e}")
-
-            if args.auto_block:
-                for entry in results.get("risk_report", []):
-                    if entry["risk_level"] == "CRITICAL":
-                        ip = entry["ip"]
-                        os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
-                        print(f"[BLOCKED] {ip}")
-        except LogsecError as e:
-            logger.error(e)
-            return 1
+        if args.auto_block:
+            for entry in results.get("risk_report", []):
+                if entry["risk_level"] == "CRITICAL":
+                    ip = entry["ip"]
+                    os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
+                    print(f"[BLOCKED] {ip}")
+        return
 
     if args.command == "juice":
-        try:
-            results = analyze_juice_logs(args.logfile)
-            print_juice_report(results, top=args.top)
-        except LogsecError as e:
-            logger.error(e)
-            return 1
+        results = analyze_juice_logs(args.logfile)
+        print_juice_report(results, top=args.top)
+        return
 
 if __name__ == "__main__":
     sys.exit(main())
