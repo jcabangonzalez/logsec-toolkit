@@ -1,8 +1,6 @@
 import argparse
 import jsonlines
-import sys
-import json  # Added this line
-import os  # Added this line
+import os
 
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
@@ -56,6 +54,7 @@ def build_parser():
     ap.add_argument("--ollama", action="store_true", help="Use local Ollama (Qwen) for AI triage instead of Claude")
     ap.add_argument("--ollama-model", default="qwen2.5-coder:latest", metavar="MODEL", help="Ollama model to use (default: qwen2.5-coder:latest)")
     ap.add_argument("--include-internal", action="store_true", help="Include RFC1918/loopback IPs (skipped by default)")
+    ap.add_argument("--jsonl", action="store_true", help="Export results as JSON Lines file")  # Added this line
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
@@ -93,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             risk_score_min=threshold,
             mitre=args.mitre,
             include_internal=args.include_internal,
+            jsonl=args.jsonl,  # Pass the --jsonl flag to the analyze function
         )
 
         if results.get("error"):
