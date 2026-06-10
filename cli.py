@@ -1,6 +1,8 @@
 import argparse
 import jsonlines
 import sys
+import json  # Added this line
+import os  # Added this line
 
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
