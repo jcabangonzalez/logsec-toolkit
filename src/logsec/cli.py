@@ -53,6 +53,7 @@ def build_parser():
     ap.add_argument("--mitre-export", action="store_true", help="Export MITRE ATT&CK Navigator layer to JSON")
     ap.add_argument("--ollama", action="store_true", help="Use local Ollama (Qwen) for AI triage instead of Claude")
     ap.add_argument("--ollama-model", default="qwen2.5-coder:latest", metavar="MODEL", help="Ollama model to use (default: qwen2.5-coder:latest)")
+    ap.add_argument("--jsonl", action="store_true", help="Export results as JSON Lines file to outputs/results.jsonl")
     ap.add_argument("--include-internal", action="store_true", help="Include RFC1918/loopback IPs (skipped by default)")
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
@@ -90,6 +91,7 @@ def main():
             risk_score_min=threshold,
             mitre=args.mitre,
             include_internal=args.include_internal,
+            jsonl=args.jsonl,
         )
 
         if results.get("error"):
