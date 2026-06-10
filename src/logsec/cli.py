@@ -1,9 +1,11 @@
 import argparse
-import os 
+import json
+import os
 
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
     analyze_with_claude,
+    analyze_with_ollama,
     configure_geoip,
     export_pdf_report,
     format_json_report,
@@ -26,7 +28,7 @@ def build_parser():
     ap.add_argument("--login-url", default="/login", help="Login URL to track (default: /login)")
     ap.add_argument("--bf-threshold", type=int, default=3, help="Brute-force threshold (default: 3)")
     ap.add_argument("--output", help="Save risk report as JSON file (e.g. report.json)")
-    ap.add_argument("--no-ai", action="store_true", help="Skip AI analysis and show risk report only")
+    ap.add_argument("--no-ai", action="store_true", help="Skip all AI analysis")
     ap.add_argument("--pdf", action="store_true", help="Export risk report as PDF file")
     ap.add_argument("--email", metavar="ADDRESS", help="Email PDF report to this address (requires --pdf)")
     ap.add_argument("--json", action="store_true", help="JSON output instead of text report")
@@ -47,10 +49,11 @@ def build_parser():
         metavar="SECS",
         help="Timeout in seconds for geo lookups (default: 2)",
     )
-    ap.add_argument('--mitre', action='store_true', help='Show MITRE ATT&CK techniques')
-    ap.add_argument('--mitre-export', action='store_true', help='Export MITRE ATT&CK Navigator layer to JSON')
-    ap.add_argument('--ollama', action='store_true', help='Use Ollama AI triage')
-    ap.add_argument('--include-internal', action='store_true', help='Include RFC1918/loopback IPs (skipped by default)')
+    ap.add_argument("--mitre", action="store_true", help="Show MITRE ATT&CK techniques")
+    ap.add_argument("--mitre-export", action="store_true", help="Export MITRE ATT&CK Navigator layer to JSON")
+    ap.add_argument("--ollama", action="store_true", help="Use local Ollama (Qwen) for AI triage instead of Claude")
+    ap.add_argument("--ollama-model", default="qwen2.5-coder:latest", metavar="MODEL", help="Ollama model to use (default: qwen2.5-coder:latest)")
+    ap.add_argument("--include-internal", action="store_true", help="Include RFC1918/loopback IPs (skipped by default)")
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
@@ -86,7 +89,6 @@ def main():
             bf_threshold=args.bf_threshold,
             risk_score_min=threshold,
             mitre=args.mitre,
-            ollama=args.ollama,
             include_internal=args.include_internal,
         )
 
@@ -105,6 +107,7 @@ def main():
                 bf_threshold=args.bf_threshold,
                 threshold=threshold,
             )
+
         if args.mitre:
             print("\n=== MITRE ATT&CK TECHNIQUES ===")
             for ip, profile in results.get("ip_profiles", {}).items():
@@ -120,20 +123,6 @@ def main():
             results["mitre_mapper"].export_navigator_layer(layer_path)
             print(f"\n[+] MITRE ATT&CK Navigator layer saved to {layer_path}")
 
-        if args.ollama:
-            print("\n=== OLLAMA AI TRIAGE ===")
-            for entry in results.get("risk_report", []):
-                triage = entry.get("ollama_triage")
-                if not triage:
-                    continue
-                print(f"\n{entry['ip']}:")
-                if isinstance(triage, dict) and "error" not in triage and "raw" not in triage:
-                    print(f"  Risk:    {triage.get('risk', '—')}")
-                    print(f"  Action:  {triage.get('action', '—')}")
-                    print(f"  Summary: {triage.get('summary', '—')}")
-                else:
-                    print(f"  {triage.get('raw') or triage.get('error') or triage}")
-
         pdf_path = "report.pdf"
         if args.pdf:
             export_pdf_report(results, pdf_path)
@@ -141,24 +130,33 @@ def main():
             send_pdf_report(pdf_path, args.email)
 
         if args.output and results.get("risk_report"):
-            import json
             with open(args.output, "w") as f:
                 json.dump(results["risk_report"], f, indent=2)
             print(f"\n[+] Risk report saved to {args.output}")
 
         risk_report = results.get("risk_report") or []
-        if risk_report and not args.no_ai and not args.json:
-            import json
 
-            print("\n--- STARTING AI SECURITY ANALYSIS ---")
-            try:
-                print(">> Requesting analysis from Claude...")
-                ai_results = analyze_with_claude(risk_report)
-                print(">> Success!\n")
-                print("=== AI SECURITY REPORT ===")
-                print(json.dumps(ai_results, indent=2))
-            except Exception as e:
-                print(f">> AI analysis failed: {e}")
+        if risk_report and not args.no_ai and not args.json:
+            if args.ollama:
+                print("\n--- STARTING OLLAMA AI TRIAGE ---")
+                try:
+                    print(f">> Requesting analysis from {args.ollama_model}...")
+                    ai_results = analyze_with_ollama(risk_report, model=args.ollama_model)
+                    print(">> Success!\n")
+                    print("=== OLLAMA AI TRIAGE ===")
+                    print(json.dumps(ai_results, indent=2))
+                except Exception as e:
+                    print(f">> Ollama triage failed: {e}")
+            else:
+                print("\n--- STARTING AI SECURITY ANALYSIS ---")
+                try:
+                    print(">> Requesting analysis from Claude...")
+                    ai_results = analyze_with_claude(risk_report)
+                    print(">> Success!\n")
+                    print("=== AI SECURITY REPORT ===")
+                    print(json.dumps(ai_results, indent=2))
+                except Exception as e:
+                    print(f">> AI analysis failed: {e}")
 
         if args.auto_block:
             for entry in results.get("risk_report", []):

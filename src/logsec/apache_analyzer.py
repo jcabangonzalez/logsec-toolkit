@@ -746,6 +746,14 @@ def analyze_with_claude(entries):
         return parsed
     return [parsed]
 
+def analyze_with_ollama(entries, model: str = "qwen2.5-coder:latest"):
+    if not entries:
+        return []
+    triage = OllamaTriage(model=model)
+    prompt = build_prompt(entries)
+    return triage.triage_batch(entries, prompt)
+
+
 def analyze_file(
     filepath: str,
     login_url: str = "/login",
@@ -755,7 +763,6 @@ def analyze_file(
     burst_threshold: int | None = None,
     risk_score_min: int | None = None,
     mitre: bool = False,
-    ollama: bool = False,
     include_internal: bool = False,
 ):
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
@@ -914,21 +921,6 @@ def analyze_file(
             risk_report.append(risk)
 
     risk_report.sort(key=lambda x: x["score"], reverse=True)
-
-    if ollama:
-        triage_engine = OllamaTriage()
-        for entry in risk_report:
-            ip = entry["ip"]
-            profile = ip_profiles.get(ip, {})
-            mitre_hits = profile.get("mitre", [])
-            technique_ids = list({m["technique_id"] for m in mitre_hits})
-            sample = profile.get("sample_request", "")
-            log_summary = f"IP {ip}: score={entry['score']}, sample_url={sample}, reasons={entry['reasons']}"
-            raw = triage_engine.analyze(log_summary, technique_ids)
-            try:
-                entry["ollama_triage"] = json.loads(raw)
-            except (json.JSONDecodeError, ValueError):
-                entry["ollama_triage"] = {"raw": raw}
 
     return {
         "login_url": login_url,
