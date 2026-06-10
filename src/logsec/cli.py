@@ -16,7 +16,7 @@ from logsec.apache_analyzer import (
     show_dashboard,
 )
 from logsec.juice_analyzer import analyze_juice_logs, print_juice_report
-
+from logsec.logger import setup_logging  # Added this line
 
 def build_parser():
     p = argparse.ArgumentParser(description="LogSec Toolkit (Apache + Juice Shop log detection)")
