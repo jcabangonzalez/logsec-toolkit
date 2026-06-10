@@ -1,0 +1,55 @@
+title: SQL Injection from Internal Network Host
+id: a1b2c3d4-1111-2222-3333-000000000005
+status: stable
+description: >
+  Detects SQL injection attempts originating from RFC1918 internal IP addresses,
+  indicating either an insider threat or a compromised internal host.
+  Observed: 192.168.1.99 sending OR '1'='1 payloads (plain + URL-encoded) to /search,
+  all returning HTTP 200 with identical 100-byte responses — likely successful injection.
+author: LogSec Toolkit
+date: 2026/06/10
+references:
+  - https://attack.mitre.org/techniques/T1190/
+  - https://attack.mitre.org/techniques/T1027/
+tags:
+  - attack.initial_access
+  - attack.t1190
+  - attack.defense_evasion
+  - attack.t1027
+logsource:
+  category: webserver
+detection:
+  internal_source:
+    c-ip|startswith:
+      - '10.'
+      - '172.16.'
+      - '172.17.'
+      - '172.18.'
+      - '172.19.'
+      - '172.20.'
+      - '172.21.'
+      - '172.22.'
+      - '172.23.'
+      - '172.24.'
+      - '172.25.'
+      - '172.26.'
+      - '172.27.'
+      - '172.28.'
+      - '172.29.'
+      - '172.30.'
+      - '172.31.'
+      - '192.168.'
+  sqli_payload:
+    cs-uri-query|contains:
+      - "' OR '"
+      - "%27%20OR"
+      - "' OR 1=1"
+      - "UNION SELECT"
+      - "%27%20UNION"
+      - "AND 1=1"
+      - "OR '1'='1"
+  condition: internal_source and sqli_payload
+falsepositives:
+  - Developers testing locally (coordinate, restrict to dev environments)
+  - Automated security scans by internal security tools (add tool IPs to allowlist)
+level: critical

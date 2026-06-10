@@ -1,0 +1,64 @@
+title: Credential Brute Force Followed by Reconnaissance
+id: a1b2c3d4-1111-2222-3333-000000000003
+status: stable
+description: >
+  Detects multi-stage attack: repeated 401 responses on a login endpoint
+  followed by sensitive path probing from the same IP within a short window.
+  Observed pattern: 5 x POST /login 401 at 03:11 UTC then /.env + /wp-admin from 1.2.3.4.
+author: LogSec Toolkit
+date: 2026/06/10
+references:
+  - https://attack.mitre.org/techniques/T1110/001/
+  - https://attack.mitre.org/techniques/T1595/003/
+tags:
+  - attack.credential_access
+  - attack.t1110.001
+  - attack.reconnaissance
+  - attack.t1595.003
+logsource:
+  category: webserver
+detection:
+  brute_force:
+    sc-status: 401
+    cs-method: 'POST'
+  condition: brute_force
+  timeframe: 5m
+  groupby:
+    - c-ip
+  having: count() >= 5
+falsepositives:
+  - Users repeatedly mistyping passwords (lower count threshold catches these — tune bf_threshold)
+  - Load tests hitting unauthenticated endpoints
+level: high
+---
+# Correlated sequence rule (for SIEM platforms supporting multi-event correlation)
+title: Brute Force then Recon — Correlated Sequence
+id: a1b2c3d4-1111-2222-3333-000000000003b
+status: experimental
+description: >
+  Sequence rule: brute force (5+ 401s) then sensitive path probe from same IP within 10 minutes.
+  Off-hours multiplier: requests between 00:00–06:00 UTC elevate severity to critical.
+author: LogSec Toolkit
+date: 2026/06/10
+tags:
+  - attack.t1110.001
+  - attack.t1595.003
+logsource:
+  category: webserver
+detection:
+  phase1:
+    sc-status: 401
+    timeframe: 5m
+    groupby: c-ip
+    having: count() >= 5
+  phase2:
+    cs-uri-stem|contains:
+      - '/.env'
+      - '/.git'
+      - '/wp-admin'
+      - '/phpmyadmin'
+      - '/admin'
+  condition: phase1 | near phase2 within 10m by c-ip
+falsepositives:
+  - None expected for this two-phase sequence
+level: high

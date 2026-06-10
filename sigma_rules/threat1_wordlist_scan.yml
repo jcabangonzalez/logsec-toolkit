@@ -1,0 +1,40 @@
+title: Automated Wordlist Scan — Sensitive Path Probing
+id: a1b2c3d4-1111-2222-3333-000000000001
+status: stable
+description: >
+  Detects automated scanning for sensitive files and admin panels
+  (/.env, /.git, /phpmyadmin, /wp-admin) in quick succession from a single IP.
+  Observed pattern: 4 sequential 404s within 4 seconds from 10.0.0.5 on 2026-02-12.
+author: LogSec Toolkit
+date: 2026/06/10
+references:
+  - https://attack.mitre.org/techniques/T1595/003/
+tags:
+  - attack.reconnaissance
+  - attack.t1595.003
+logsource:
+  category: webserver
+detection:
+  selection:
+    cs-uri-stem|contains:
+      - '/.env'
+      - '/.git'
+      - '/phpmyadmin'
+      - '/wp-admin'
+      - '/wp-login'
+      - '/admin'
+      - '/config'
+      - '/backup'
+  filter_legit:
+    c-ip|startswith:
+      - '127.'
+      - '::1'
+  condition: selection and not filter_legit
+  timeframe: 10s
+  groupby:
+    - c-ip
+  having: count() >= 3
+falsepositives:
+  - Security scanners run by authorized teams (add their IPs to filter_legit)
+  - Misconfigured CMS making repeated self-requests
+level: medium

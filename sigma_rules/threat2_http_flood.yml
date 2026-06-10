@@ -1,0 +1,31 @@
+title: HTTP Flood — High-Rate Identical Requests
+id: a1b2c3d4-1111-2222-3333-000000000002
+status: stable
+description: >
+  Detects a single IP making rapid identical GET requests at machine-gun rate,
+  consistent with DoS flooding or automated bot activity.
+  Observed pattern: 11 identical GET / requests in 11 seconds from 10.0.0.9.
+author: LogSec Toolkit
+date: 2026/06/10
+references:
+  - https://attack.mitre.org/techniques/T1499/002/
+tags:
+  - attack.impact
+  - attack.t1499.002
+logsource:
+  category: webserver
+detection:
+  selection:
+    cs-method: 'GET'
+    sc-status: 200
+  condition: selection
+  timeframe: 10s
+  groupby:
+    - c-ip
+    - cs-uri-stem
+  having: count() >= 10
+falsepositives:
+  - Legitimate load testing by authorized teams
+  - CDN health-check probes (filter by known CDN IP ranges)
+  - Search engine crawlers (check User-Agent)
+level: medium
