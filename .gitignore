@@ -19,6 +19,8 @@ Thumbs.db
 # Reports
 reports/*.json
 outputs/*.jsonl
+report.pdf
+outputs/report.pdf
 src/.env
 src/logsec/geo_cache.json
 src/logsec/seen_ips.json
