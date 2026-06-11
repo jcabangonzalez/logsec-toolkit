@@ -1,11 +1,11 @@
 import argparse
-import json
 import os
+import json
+import sys
 
 from logsec.apache_analyzer import (
     analyze_file as analyze_apache_file,
     analyze_with_claude,
-    analyze_with_ollama,
     configure_geoip,
     export_pdf_report,
     format_json_report,
@@ -16,7 +16,7 @@ from logsec.apache_analyzer import (
     show_dashboard,
 )
 from logsec.juice_analyzer import analyze_juice_logs, print_juice_report
-from logsec.logger import setup_logging  # Added this line
+
 
 def build_parser():
     p = argparse.ArgumentParser(description="LogSec Toolkit (Apache + Juice Shop log detection)")
@@ -28,7 +28,7 @@ def build_parser():
     ap.add_argument("--login-url", default="/login", help="Login URL to track (default: /login)")
     ap.add_argument("--bf-threshold", type=int, default=3, help="Brute-force threshold (default: 3)")
     ap.add_argument("--output", help="Save risk report as JSON file (e.g. report.json)")
-    ap.add_argument("--no-ai", action="store_true", help="Skip all AI analysis")
+    ap.add_argument("--no-ai", action="store_true", help="Skip AI analysis and show risk report only")
     ap.add_argument("--pdf", action="store_true", help="Export risk report as PDF file")
     ap.add_argument("--email", metavar="ADDRESS", help="Email PDF report to this address (requires --pdf)")
     ap.add_argument("--json", action="store_true", help="JSON output instead of text report")
@@ -37,24 +37,14 @@ def build_parser():
     ap.add_argument("--monitor", action="store_true", help="Real-time tail monitoring mode")
     ap.add_argument("--dashboard", action="store_true", help="Rich terminal dashboard")
     ap.add_argument("--auto-block", action="store_true", help="Auto-block CRITICAL IPs using iptables")
-    ap.add_argument(
-        "--geo-disable",
-        action="store_true",
-        help="Skip geo-IP lookups (faster, no external API)",
-    )
-    ap.add_argument(
-        "--geo-timeout",
-        type=float,
-        default=None,
-        metavar="SECS",
-        help="Timeout in seconds for geo lookups (default: 2)",
-    )
+    ap.add_argument("--geo-disable", action="store_true", help="Skip geo-IP lookups (faster, no external API)")
+    ap.add_argument("--geo-timeout", type=float, default=None, metavar="SECS", help="Timeout for geo lookups")
     ap.add_argument("--mitre", action="store_true", help="Show MITRE ATT&CK techniques")
     ap.add_argument("--mitre-export", action="store_true", help="Export MITRE ATT&CK Navigator layer to JSON")
-    ap.add_argument("--ollama", action="store_true", help="Use local Ollama (Qwen) for AI triage instead of Claude")
-    ap.add_argument("--ollama-model", default="qwen2.5-coder:latest", metavar="MODEL", help="Ollama model to use (default: qwen2.5-coder:latest)")
-    ap.add_argument("--jsonl", action="store_true", help="Export results as JSON Lines file to outputs/results.jsonl")
-    ap.add_argument("--include-internal", action="store_true", help="Include RFC1918/loopback IPs (skipped by default)")
+    ap.add_argument("--ollama", action="store_true", help="Use local Ollama (Qwen) for AI triage")
+    ap.add_argument("--ollama-model", default="qwen2.5-coder:latest", metavar="MODEL", help="Ollama model to use")
+    ap.add_argument("--include-internal", action="store_true", help="Include RFC1918/local IPs (skipped by default)")
+    ap.add_argument("--jsonl", action="store_true", help="Export results as JSON Lines (one JSON per line)")
 
     js = sub.add_parser("juice", help="Analyze OWASP Juice Shop docker logs")
     js.add_argument("logfile", help="Path to juice_shop_docker.log")
@@ -63,8 +53,9 @@ def build_parser():
     return p
 
 
-def main():
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     if args.command == "apache":
         load_config(getattr(args, "config", None))
@@ -73,7 +64,7 @@ def main():
             timeout_seconds=args.geo_timeout,
         )
         if args.email and not args.pdf:
-            build_parser().error("apache: --email requires --pdf")
+            parser.error("apache: --email requires --pdf")
 
         if args.monitor:
             monitor_log(
@@ -81,7 +72,7 @@ def main():
                 login_url=args.login_url,
                 dashboard=args.dashboard,
             )
-            return
+            return 0
 
         threshold = args.threshold
         results = analyze_apache_file(
@@ -90,13 +81,27 @@ def main():
             bf_threshold=args.bf_threshold,
             risk_score_min=threshold,
             mitre=args.mitre,
-            include_internal=args.include_internal,
-            jsonl=args.jsonl,
+            ollama=args.ollama,
         )
+
+        # JSONL export
+        if args.jsonl:
+            risk_entries = results.get('risk_report', [])
+            lines = []
+            for entry in risk_entries:
+                json_line = {
+                    "ip": entry.get("ip"),
+                    "risk_level": entry.get("risk_level"),
+                    "risk_score": entry.get("score"),
+                    "reasons": entry.get("reasons", [])
+                }
+                lines.append(json.dumps(json_line))
+            print('\n'.join(lines))
+            return 0
 
         if results.get("error"):
             print_apache_report(results)
-            return
+            return 1
 
         if args.dashboard:
             show_dashboard(results)
@@ -110,21 +115,6 @@ def main():
                 threshold=threshold,
             )
 
-        if args.mitre:
-            print("\n=== MITRE ATT&CK TECHNIQUES ===")
-            for ip, profile in results.get("ip_profiles", {}).items():
-                mitre = profile.get("mitre", [])
-                if mitre:
-                    unique = list({m["technique_id"]: m for m in mitre}.values())
-                    print(f"\n{ip}:")
-                    for t in unique:
-                        print(f"  [{t['technique_id']}] {t['technique_name']} ({t['tactic_name']})")
-
-        if args.mitre_export:
-            layer_path = "mitre_navigator_layer.json"
-            results["mitre_mapper"].export_navigator_layer(layer_path)
-            print(f"\n[+] MITRE ATT&CK Navigator layer saved to {layer_path}")
-
         pdf_path = "report.pdf"
         if args.pdf:
             export_pdf_report(results, pdf_path)
@@ -137,28 +127,16 @@ def main():
             print(f"\n[+] Risk report saved to {args.output}")
 
         risk_report = results.get("risk_report") or []
-
         if risk_report and not args.no_ai and not args.json:
-            if args.ollama:
-                print("\n--- STARTING OLLAMA AI TRIAGE ---")
-                try:
-                    print(f">> Requesting analysis from {args.ollama_model}...")
-                    ai_results = analyze_with_ollama(risk_report, model=args.ollama_model)
-                    print(">> Success!\n")
-                    print("=== OLLAMA AI TRIAGE ===")
-                    print(json.dumps(ai_results, indent=2))
-                except Exception as e:
-                    print(f">> Ollama triage failed: {e}")
-            else:
-                print("\n--- STARTING AI SECURITY ANALYSIS ---")
-                try:
-                    print(">> Requesting analysis from Claude...")
-                    ai_results = analyze_with_claude(risk_report)
-                    print(">> Success!\n")
-                    print("=== AI SECURITY REPORT ===")
-                    print(json.dumps(ai_results, indent=2))
-                except Exception as e:
-                    print(f">> AI analysis failed: {e}")
+            print("\n--- STARTING AI SECURITY ANALYSIS ---")
+            try:
+                print(">> Requesting analysis from Claude...")
+                ai_results = analyze_with_claude(risk_report)
+                print(">> Success!\n")
+                print("=== AI SECURITY REPORT ===")
+                print(json.dumps(ai_results, indent=2))
+            except Exception as e:
+                print(f">> AI analysis failed: {e}")
 
         if args.auto_block:
             for entry in results.get("risk_report", []):
@@ -166,13 +144,15 @@ def main():
                     ip = entry["ip"]
                     os.system(f"sudo iptables -A INPUT -s {ip} -j DROP")
                     print(f"[BLOCKED] {ip}")
-        return
+        return 0
 
     if args.command == "juice":
         results = analyze_juice_logs(args.logfile)
         print_juice_report(results, top=args.top)
-        return
+        return 0
+
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
