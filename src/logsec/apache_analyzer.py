@@ -571,7 +571,6 @@ def classify_risk(
     bf_threshold: int | None = None,
     include_geo: bool = False,
     include_internal: bool = False,
-    jsonl: bool = False,
 ) -> dict:
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
     if not include_internal and is_whitelisted(ip):
@@ -764,8 +763,8 @@ def analyze_file(
     burst_threshold: int | None = None,
     risk_score_min: int | None = None,
     mitre: bool = False,
+    ollama: bool = False,
     include_internal: bool = False,
-    jsonl: bool = False,
 ):
     bf_threshold = BF_THRESHOLD if bf_threshold is None else bf_threshold
     flood_threshold = FLOOD_THRESHOLD if flood_threshold is None else flood_threshold
@@ -915,6 +914,12 @@ def analyze_file(
             include_geo=False,
             include_internal=include_internal,
         )
+        if mitre and ip in ip_profiles and "mitre" in ip_profiles[ip]:
+            risk["mitre_techniques"] = ip_profiles[ip]["mitre"]
+
+        if ollama and ip in ip_profiles and "ai_triage" in ip_profiles[ip]:
+            risk["ai_triage"] = ip_profiles[ip]["ai_triage"]
+
         if risk["score"] >= risk_score_min and risk["score"] > 0:
             if _geo_enabled:
                 geo = get_geoip(ip)
@@ -923,31 +928,6 @@ def analyze_file(
             risk_report.append(risk)
 
     risk_report.sort(key=lambda x: x["score"], reverse=True)
-
-    if jsonl:
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
-        jsonl_path = output_dir / "results.jsonl"
-        with open(jsonl_path, "w", encoding="utf-8") as jf:
-            for entry in risk_report:
-                ip = entry["ip"]
-                profile = ip_profiles.get(ip, {})
-                recent = profile.get("recent_requests", [])
-                sample = recent[0] if recent else {}
-                mitre_matches = profile.get("mitre", [])
-                record: dict[str, Any] = {
-                    "ip": ip,
-                    "timestamp": sample.get("timestamp", ""),
-                    "method": sample.get("method", ""),
-                    "path": sample.get("url", ""),
-                    "status_code": sample.get("status", 0),
-                    "risk_score": entry["score"],
-                    "risk_level": entry["risk_level"],
-                }
-                if mitre_matches:
-                    record["mitre_tactic"] = mitre_matches[0].get("tactic_name", "")
-                jf.write(json.dumps(record) + "\n")
-        print(f"[+] JSONL report saved to {jsonl_path}", file=sys.stderr)
 
     return {
         "login_url": login_url,
