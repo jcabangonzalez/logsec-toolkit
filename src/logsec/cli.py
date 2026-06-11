@@ -81,10 +81,9 @@ def main(argv: list[str] | None = None) -> int:
             bf_threshold=args.bf_threshold,
             risk_score_min=threshold,
             mitre=args.mitre,
-            ollama=args.ollama,
+            ollama=args.ollama,  # Added this line
         )
 
-        # JSONL export
         if args.jsonl:
             risk_entries = results.get('risk_report', [])
             lines = []
@@ -95,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
                     "risk_score": entry.get("score"),
                     "reasons": entry.get("reasons", [])
                 }
+                if args.mitre and "mitre_techniques" in entry:
+                    json_line["mitre_techniques"] = entry["mitre_techniques"]
+                if args.ollama and "ai_triage" in entry:
+                    json_line["ai_triage"] = entry["ai_triage"]
                 lines.append(json.dumps(json_line))
             print('\n'.join(lines))
             return 0
