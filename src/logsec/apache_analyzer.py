@@ -708,6 +708,12 @@ You are a Senior Cybersecurity Analyst.
 TASK:
 Classify the threat level and provide a recommendation for each of the following IPs: {ips_list}
 
+REASONING:
+Analyze each IP step by step in this exact order:
+1. Sensitive paths: check for access to sensitive endpoints (e.g., /.env, /.git, /wp-admin, /phpmyadmin, /actuator)
+2. Time/hours: evaluate whether requests occur during suspicious off-hours (0–5am)
+3. Repetition: assess whether the IP shows repeated or bursting request patterns
+
 CONTEXT:
 {"".join(context_blocks)}
 OUTPUT:
@@ -729,22 +735,34 @@ def analyze_with_claude(entries):
 
     client = Anthropic()
     prompt = build_prompt(entries)
-
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=min(4096, 500 + 250 * len(entries)),
-        system=(
-            "Respond only in JSON format. Do not include any text, markdown, or explanation "
-            "outside the JSON array."
-        ),
-        messages=[{"role": "user", "content": prompt}],
+    max_tokens = min(4096, 500 + 250 * len(entries))
+    system = (
+        "Respond only in JSON format. Do not include any text, markdown, or explanation "
+        "outside the JSON array."
     )
 
-    text = re.sub(r"```json|```", "", message.content[0].text).strip()
-    parsed = json.loads(text)
-    if isinstance(parsed, list):
-        return parsed
-    return [parsed]
+    all_runs = []
+    for _ in range(3):
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = re.sub(r"```json|```", "", message.content[0].text).strip()
+        parsed = json.loads(text)
+        all_runs.append(parsed if isinstance(parsed, list) else [parsed])
+
+    merged = []
+    for i in range(len(entries)):
+        candidates = [run[i] for run in all_runs if i < len(run)]
+        if not candidates:
+            continue
+        majority_level = Counter(c["risk_level"] for c in candidates).most_common(1)[0][0]
+        chosen = next((c for c in candidates if c["risk_level"] == majority_level), candidates[0])
+        merged.append(chosen)
+
+    return merged
 
 def analyze_with_ollama(entries, model: str = "qwen2.5-coder:latest"):
     if not entries:
