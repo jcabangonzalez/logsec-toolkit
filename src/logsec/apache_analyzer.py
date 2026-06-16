@@ -710,6 +710,23 @@ CONTEXT:
 TASK:
 Classify the threat level and provide a recommendation for each of the following IPs: {ips_list}
 
+EXAMPLES:
+HIGH risk example:
+- IP: 203.0.113.9
+  Risk Level: HIGH
+  Score: 92
+  Reasons: accessed /.env and /wp-admin at 2am, 150 requests in 10 minutes
+  → reasoning: ["Accessed sensitive path /.env", "Requests during off-hours (2am)", "Repeated bursting pattern (150 requests in 10 min)"]
+  → recommendation: "Block IP immediately and review exposed endpoints"
+
+LOW risk example:
+- IP: 198.51.100.4
+  Risk Level: LOW
+  Score: 8
+  Reasons: accessed /index.html at 10am, single request
+  → reasoning: ["Normal path accessed", "Request during business hours (10am)", "Single non-repeated request"]
+  → recommendation: "No action required, continue monitoring"
+
 REASONING:
 Analyze each IP step by step in this exact order:
 1. Sensitive paths: check for access to sensitive endpoints (e.g., /.env, /.git, /wp-admin, /phpmyadmin, /actuator)
