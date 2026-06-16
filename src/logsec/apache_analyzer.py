@@ -705,6 +705,8 @@ def build_prompt(entries):
 ROLE:
 You are a Senior Cybersecurity Analyst.
 
+CONTEXT:
+{"".join(context_blocks)}
 TASK:
 Classify the threat level and provide a recommendation for each of the following IPs: {ips_list}
 
@@ -714,8 +716,6 @@ Analyze each IP step by step in this exact order:
 2. Time/hours: evaluate whether requests occur during suspicious off-hours (0–5am)
 3. Repetition: assess whether the IP shows repeated or bursting request patterns
 
-CONTEXT:
-{"".join(context_blocks)}
 OUTPUT:
 Return ONLY a JSON array with one object per IP, in the same order as listed above. No text before or after it:
 [
