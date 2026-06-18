@@ -765,6 +765,7 @@ def analyze_with_claude(entries):
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
         )
         text = re.sub(r"```json|```", "", message.content[0].text).strip()
         parsed = json.loads(text)
