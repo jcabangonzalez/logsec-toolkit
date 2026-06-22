@@ -717,6 +717,7 @@ HIGH risk example:
   Score: 92
   Reasons: accessed /.env and /wp-admin at 2am, 150 requests in 10 minutes
   → reasoning: ["Accessed sensitive path /.env", "Requests during off-hours (2am)", "Repeated bursting pattern (150 requests in 10 min)"]
+  → cia_impact: ["Confidentiality", "Availability"]
   → recommendation: "Block IP immediately and review exposed endpoints"
 
 LOW risk example:
@@ -725,6 +726,7 @@ LOW risk example:
   Score: 8
   Reasons: accessed /index.html at 10am, single request
   → reasoning: ["Normal path accessed", "Request during business hours (10am)", "Single non-repeated request"]
+  → cia_impact: []
   → recommendation: "No action required, continue monitoring"
 
 REASONING:
@@ -732,6 +734,10 @@ Analyze each IP step by step in this exact order:
 1. Sensitive paths: check for access to sensitive endpoints (e.g., /.env, /.git, /wp-admin, /phpmyadmin, /actuator)
 2. Time/hours: evaluate whether requests occur during suspicious off-hours (0–5am)
 3. Repetition: assess whether the IP shows repeated or bursting request patterns
+4. CIA impact: determine which of the three CIA principles are threatened using these mappings:
+   - Confidentiality: SQL injection, sensitive path access (/.env, /.git, /backup.zip), credential brute-force
+   - Integrity: SQL injection with write patterns (DROP, INSERT, UPDATE), file upload probing
+   - Availability: flood/DDoS, high request rate, burst traffic
 
 OUTPUT:
 Return ONLY a JSON array with one object per IP, in the same order as listed above. No text before or after it:
@@ -740,6 +746,7 @@ Return ONLY a JSON array with one object per IP, in the same order as listed abo
     "ip": "<ip>",
     "risk_level": "<level>",
     "reasoning": ["reason 1", "reason 2"],
+    "cia_impact": ["Confidentiality", "Integrity", "Availability"],
     "recommendation": "one action"
   }}
 ]
