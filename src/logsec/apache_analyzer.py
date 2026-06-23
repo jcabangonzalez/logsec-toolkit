@@ -767,21 +767,31 @@ def analyze_with_claude(entries):
 
     all_runs = []
     for _ in range(3):
-        try:
-            message = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                top_p=0.1,
-            )
-            text = re.sub(r"```json|```", "", message.content[0].text).strip()
-            parsed = json.loads(text)
-            all_runs.append(parsed if isinstance(parsed, list) else [parsed])
-            logger.info("Claude triage succeeded for %d entries", len(entries))
-        except Exception as e:
-            logger.error("Claude triage failed: %s", e, exc_info=True)
+        for attempt in range(4):
+            try:
+                message = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=max_tokens,
+                    system=system,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    top_p=0.1,
+                )
+                text = re.sub(r"```json|```", "", message.content[0].text).strip()
+                parsed = json.loads(text)
+                all_runs.append(parsed if isinstance(parsed, list) else [parsed])
+                logger.info("Claude triage succeeded for %d entries", len(entries))
+                break
+            except Exception as e:
+                if attempt < 3:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "Claude triage attempt %d failed: %s — retrying in %ds",
+                        attempt + 1, e, wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.error("Claude triage failed after 4 attempts: %s", e, exc_info=True)
 
     merged = []
     for i in range(len(entries)):
