@@ -760,10 +760,7 @@ def analyze_with_claude(entries):
     client = Anthropic()
     prompt = build_prompt(entries)
     max_tokens = min(2048, 200 + 100 * len(entries))
-    system = (
-        "Respond only in JSON format. Do not include any text, markdown, or explanation "
-        "outside the JSON array."
-    )
+    system = "Respond only as a valid JSON array."
 
     all_runs = []
     for _ in range(3):
