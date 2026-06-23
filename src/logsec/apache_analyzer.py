@@ -694,8 +694,24 @@ def build_prompt(entries):
     if not entries:
         return ""
 
-    context_blocks = []
+    required_fields = {"ip", "risk_level", "score", "reasons"}
+    valid_entries = []
     for entry in entries:
+        missing = required_fields - entry.keys()
+        if missing:
+            logger.warning(
+                "build_prompt: skipping entry missing required fields %s: %r",
+                sorted(missing),
+                entry,
+            )
+            continue
+        valid_entries.append(entry)
+
+    if not valid_entries:
+        return ""
+
+    context_blocks = []
+    for entry in valid_entries:
         context_blocks.append(
             f"- IP: {entry['ip']}\n"
             f"  Risk Level: {entry['risk_level']}\n"
@@ -703,7 +719,7 @@ def build_prompt(entries):
             f"  Reasons: {entry['reasons']}\n"
         )
 
-    ips_list = ", ".join(entry["ip"] for entry in entries)
+    ips_list = ", ".join(entry["ip"] for entry in valid_entries)
     return f"""
 ROLE:
 You are a Senior Cybersecurity Analyst.
