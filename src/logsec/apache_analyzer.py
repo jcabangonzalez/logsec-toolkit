@@ -1,5 +1,6 @@
 import argparse
 import ipaddress
+import logging
 import re
 import os
 import json
@@ -29,6 +30,8 @@ except ImportError:
     yaml = None
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _DEFAULT_CONFIG_PATHS = (
@@ -764,17 +767,21 @@ def analyze_with_claude(entries):
 
     all_runs = []
     for _ in range(3):
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            top_p=0.1,
-        )
-        text = re.sub(r"```json|```", "", message.content[0].text).strip()
-        parsed = json.loads(text)
-        all_runs.append(parsed if isinstance(parsed, list) else [parsed])
+        try:
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                top_p=0.1,
+            )
+            text = re.sub(r"```json|```", "", message.content[0].text).strip()
+            parsed = json.loads(text)
+            all_runs.append(parsed if isinstance(parsed, list) else [parsed])
+            logger.info("Claude triage succeeded for %d entries", len(entries))
+        except Exception as e:
+            logger.error("Claude triage failed: %s", e, exc_info=True)
 
     merged = []
     for i in range(len(entries)):
