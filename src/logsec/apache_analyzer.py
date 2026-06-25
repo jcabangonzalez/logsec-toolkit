@@ -57,6 +57,21 @@ _RECENT_REQUESTS_MAX = 20
 SEEN_IPS_FILE = str(_PACKAGE_DIR / "seen_ips.json")
 RISK_LEVELS = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
+# Keywords expected in reasons for each MITRE technique; empty list skips validation.
+_TECHNIQUE_REASON_KEYWORDS: dict[str, list[str]] = {
+    "T1190":    ["sql", "injection"],
+    "T1133":    ["ssh", "rdp", "vnc"],
+    "T1059":    ["command", "script", "exec"],
+    "T1078":    ["night"],
+    "T1006":    ["path", "traversal"],
+    "T1027":    ["encod", "obfuscat", "base64"],
+    "T1110.001": ["brute force", "login"],
+    "T1595.002": ["scanner", "path", "scan"],
+    "T1040":    ["sniff", "capture"],
+    "T1048":    ["exfiltrat", "large"],
+    "T1499":    ["flood", "rate", "burst"],
+}
+
 # Per-IP request sequences capture order and context (method, URL, status, time).
 # Isolated signals (e.g. one 404 or one login POST) are noisy; ordered sequences
 # support behavioral correlation—recon then exploit, scan bursts, auth-then-admin—
@@ -853,6 +868,39 @@ def analyze_with_ollama(entries, model: str = "qwen2.5-coder:latest"):
     return _apply_review_flags(claude_results, ollama_results)
 
 
+def validate_mitre_mapping(entries: list) -> list:
+    """Validate that each assigned MITRE technique is supported by the entry's reasons.
+
+    Techniques with no matching keyword in reasons are flagged with mitre_mismatch: True
+    and a WARNING is logged. Techniques absent from _TECHNIQUE_REASON_KEYWORDS are skipped.
+    """
+    for entry in entries:
+        techniques = entry.get("mitre_techniques")
+        if not techniques:
+            continue
+        reasons_text = " ".join(entry.get("reasons", [])).lower()
+        ip = entry.get("ip", "unknown")
+        mismatch_found = False
+        for tech in techniques:
+            tech_id = tech.get("technique_id", "")
+            expected_keywords = _TECHNIQUE_REASON_KEYWORDS.get(tech_id)
+            if not expected_keywords:
+                continue
+            if not any(kw in reasons_text for kw in expected_keywords):
+                mismatch_found = True
+                logger.warning(
+                    "MITRE mismatch for IP %s: technique %s (%s) has no supporting indicator"
+                    " in reasons %r",
+                    ip,
+                    tech_id,
+                    tech.get("technique_name", ""),
+                    entry.get("reasons", []),
+                )
+        if mismatch_found:
+            entry["mitre_mismatch"] = True
+    return entries
+
+
 def analyze_file(
     filepath: str,
     login_url: str = "/login",
@@ -1027,6 +1075,9 @@ def analyze_file(
             risk_report.append(risk)
 
     risk_report.sort(key=lambda x: x["score"], reverse=True)
+
+    if mitre:
+        validate_mitre_mapping(risk_report)
 
     return {
         "login_url": login_url,
