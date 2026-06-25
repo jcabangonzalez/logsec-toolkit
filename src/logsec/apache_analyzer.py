@@ -820,12 +820,37 @@ def analyze_with_claude(entries):
 
     return merged
 
+def _apply_review_flags(claude_results: list, alt_results: list) -> list:
+    """Flag entries where alt model risk_level disagrees with Claude's majority vote."""
+    claude_by_ip = {
+        entry["ip"]: entry["risk_level"]
+        for entry in claude_results
+        if "ip" in entry and "risk_level" in entry
+    }
+    for entry in alt_results:
+        ip = entry.get("ip")
+        alt_level = entry.get("risk_level")
+        claude_level = claude_by_ip.get(ip)
+        if ip and alt_level and claude_level and claude_level != alt_level:
+            entry["review_flag"] = True
+            logger.warning(
+                "Model disagreement for IP %s: Claude majority=%s, alt model=%s — review_flag set",
+                ip,
+                claude_level,
+                alt_level,
+            )
+    return alt_results
+
+
 def analyze_with_ollama(entries, model: str = "qwen2.5-coder:latest"):
     if not entries:
         return []
     triage = OllamaTriage(model=model)
     prompt = build_prompt(entries)
-    return triage.triage_batch(entries, prompt)
+    ollama_results = triage.triage_batch(entries, prompt)
+
+    claude_results = analyze_with_claude(entries)
+    return _apply_review_flags(claude_results, ollama_results)
 
 
 def analyze_file(
