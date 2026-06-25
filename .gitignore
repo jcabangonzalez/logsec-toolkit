@@ -21,6 +21,7 @@ Thumbs.db
 !samples/*.log
 
 # Reports
+src/outputs/
 reports/*.json
 outputs/*.jsonl
 report.pdf
